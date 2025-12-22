@@ -1116,13 +1116,13 @@ document.addEventListener('DOMContentLoaded', () => {
 ```
 
 #### 検証
-- [ ] JavaScriptが読み込まれる
-- [ ] イベントリスナーが動作する
-- [ ] コンソールエラーがない
+- [x] JavaScriptが読み込まれる
+- [x] イベントリスナーが動作する
+- [x] コンソールエラーがない
 
 ---
 
-### Step 7.2: AntiForgeryトークンの追加 (30分)
+### Step 7.2: AntiForgeryトークンの追加 (30分) ✅
 
 #### タスク
 `Index.cshtml` にAntiForgeryトークンを追加
@@ -1136,8 +1136,8 @@ document.addEventListener('DOMContentLoaded', () => {
 ```
 
 #### 検証
-- [ ] トークンがHTMLに出力される
-- [ ] POSTリクエストが成功する
+- [x] トークンがHTMLに出力される
+- [x] POSTリクエストが成功する
 
 ---
 

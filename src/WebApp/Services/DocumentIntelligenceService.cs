@@ -72,21 +72,56 @@ public class DocumentIntelligenceService : IOcrService
 
             var result = operation.Value;
 
-            // テキスト行を抽出
+            // テキスト行を抽出し、単語の信頼度から行の信頼度を計算
             var lines = new List<TextLine>();
+            var allConfidences = new List<double>();
+
             foreach (var page in result.Pages)
             {
                 foreach (var line in page.Lines)
                 {
+                    // 行に含まれる単語の信頼度を取得
+                    var lineConfidences = new List<double>();
+                    
+                    // page.Words から、この行に含まれる単語を特定して信頼度を取得
+                    if (page.Words != null)
+                    {
+                        foreach (var word in page.Words)
+                        {
+                            // 単語が行の範囲内にあるかチェック（Spanを使用）
+                            if (line.Spans.Any(lineSpan => 
+                                word.Span.Index >= lineSpan.Index && 
+                                word.Span.Index < lineSpan.Index + lineSpan.Length))
+                            {
+                                if (word.Confidence > 0)
+                                {
+                                    lineConfidences.Add(word.Confidence);
+                                }
+                            }
+                        }
+                    }
+
+                    // 行の平均信頼度を計算（単語がない場合は0）
+                    var lineConfidence = lineConfidences.Any() ? lineConfidences.Average() : 0.0;
+                    
                     lines.Add(new TextLine
                     {
                         Text = line.Content,
-                        Confidence = 1.0 // DocumentLine には Confidence プロパティがないため固定値
+                        Confidence = lineConfidence
                     });
+
+                    if (lineConfidence > 0)
+                    {
+                        allConfidences.Add(lineConfidence);
+                    }
                 }
             }
 
-            _logger.LogInformation("OCR処理完了: {LineCount} 行抽出", lines.Count);
+            // 全体の平均信頼度を計算
+            var overallConfidence = allConfidences.Any() ? allConfidences.Average() : 0.0;
+
+            _logger.LogInformation("OCR処理完了: {LineCount} 行抽出、平均信頼度: {Confidence:P1}", 
+                lines.Count, overallConfidence);
 
             return new OcrResult
             {
@@ -94,7 +129,7 @@ public class DocumentIntelligenceService : IOcrService
                 ExtractedText = result.Content,
                 Lines = lines,
                 PageCount = result.Pages.Count,
-                ConfidenceScore = 1.0 // 全体の信頼度も固定値
+                ConfidenceScore = overallConfidence
             };
         }
         catch (RequestFailedException ex)
