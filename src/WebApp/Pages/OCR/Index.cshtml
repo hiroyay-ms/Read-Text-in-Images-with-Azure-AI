@@ -31,12 +31,15 @@
                             </p>
                             <p class="mb-2">ここに画像をドラッグ&ドロップ</p>
                             <p class="text-muted mb-3">または</p>
-                            <div class="input-group">
-                                <input type="file" 
-                                       class="form-control" 
-                                       id="imageFile" 
-                                       accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
-                            </div>
+                            <p class="mb-0">
+                                <a href="#" id="fileSelectLink" class="text-decoration-none">
+                                    <i class="bi bi-file-earmark-arrow-up"></i> ファイルの選択
+                                </a>
+                            </p>
+                            <input type="file" 
+                                   class="d-none" 
+                                   id="imageFile" 
+                                   accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
                         </div>
 
                         <div class="d-grid">
@@ -54,7 +57,7 @@
                         <div class="row">
                             <!-- 左側: 画像プレビュー -->
                             <div class="col-md-5">
-                                <h5>アップロードされた画像</h5>
+                                <h5>アップロードされた画像 <span id="fileNameDisplay" class="text-muted" style="font-size: 0.9rem;"></span></h5>
                                 <div id="imagePreviewContainer" class="border rounded d-flex align-items-center justify-content-center" style="min-height: 300px; background-color: #f8f9fa;">
                                     <img id="imagePreview" class="img-fluid rounded" style="display: none; max-height: 500px;" alt="プレビュー">
                                     <p id="noImageText" class="text-muted">画像が選択されていません</p>

@@ -2,10 +2,12 @@
 
 document.addEventListener('DOMContentLoaded', function () {
     const imageFileInput = document.getElementById('imageFile');
+    const fileSelectLink = document.getElementById('fileSelectLink');
     const runBtn = document.getElementById('runBtn');
     const errorArea = document.getElementById('errorArea');
     const imagePreview = document.getElementById('imagePreview');
     const noImageText = document.getElementById('noImageText');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
     const textAreaContainer = document.getElementById('textAreaContainer');
     const noTextMessage = document.getElementById('noTextMessage');
     const loadingInText = document.getElementById('loadingInText');
@@ -21,6 +23,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // ドラッグ&ドロップ機能の初期化
     initializeDragAndDrop();
+
+    // 「ファイルの選択」リンククリック時の処理
+    fileSelectLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        imageFileInput.click();
+    });
 
     // ファイル選択時の処理
     imageFileInput.addEventListener('change', function (e) {
@@ -62,20 +71,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 handleFileSelect(files[0]);
             }
         }, false);
-
-        // クリックしてファイル選択
-        dropArea.addEventListener('click', (e) => {
-            // input要素自体がクリックされた場合は処理しない
-            if (e.target !== imageFileInput) {
-                imageFileInput.click();
-            }
-        });
     }
 
     // ファイル選択の処理を共通化
     function handleFileSelect(file) {
         if (file) {
             selectedFile = file;
+            
+            // ファイル名を表示
+            fileNameDisplay.textContent = `(${file.name})`;
             
             // 画像プレビューを表示
             const reader = new FileReader();
@@ -94,6 +98,7 @@ document.addEventListener('DOMContentLoaded', function () {
             resetTextArea();
         } else {
             selectedFile = null;
+            fileNameDisplay.textContent = '';
             imagePreview.style.display = 'none';
             noImageText.style.display = 'block';
             runBtn.disabled = true;

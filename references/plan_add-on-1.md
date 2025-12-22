@@ -30,10 +30,10 @@ Azure OpenAI Service を使用して GPT-4o によるテキスト抽出機能の
 ### Step 12.1: Azure OpenAI リソースの準備 (1時間)
 
 #### タスク
-- [ ] Azure Portal で Azure OpenAI Service リソースを確認（デプロイ済み）
-- [ ] GPT-4o モデルのデプロイ名を確認
-- [ ] エンドポイント URL を確認
-- [ ] `appsettings.Development.json` に設定追加
+- [x] Azure Portal で Azure OpenAI Service リソースを確認（デプロイ済み）
+- [x] GPT-4o モデルのデプロイ名を確認
+- [x] エンドポイント URL を確認
+- [x] `appsettings.Development.json` に設定追加
 
 #### Azure Portal での作業手順
 
@@ -83,19 +83,19 @@ Azure OpenAI Service を使用して GPT-4o によるテキスト抽出機能の
 ```
 
 #### 検証
-- [ ] Azure Portal で既存リソースが確認できている
-- [ ] GPT-4o のデプロイが存在している
-- [ ] エンドポイント URL が取得できている
-- [ ] デプロイ名が確認できている
-- [ ] Entra ID 認証が有効になっている
+- [x] Azure Portal で既存リソースが確認できている
+- [x] GPT-4o のデプロイが存在している
+- [x] エンドポイント URL が取得できている
+- [x] デプロイ名が確認できている
+- [x] Entra ID 認証が有効になっている
 
 ---
 
 ### Step 12.2: NuGet パッケージのインストール (30分)
 
 #### タスク
-- [ ] `Azure.AI.OpenAI` パッケージをインストール
-- [ ] 必要に応じて `Azure.Identity` を最新版に更新（既にインストール済み）
+- [x] `Azure.AI.OpenAI` パッケージをインストール
+- [x] 必要に応じて `Azure.Identity` を最新版に更新（既にインストール済み）
 
 #### コマンド
 
@@ -111,17 +111,17 @@ dotnet build
 - **推奨バージョン**: 最新の安定版（1.0.0-beta.17 以降）
 
 #### 検証
-- [ ] パッケージが `WebApp.csproj` に追加されている
-- [ ] ビルドが成功する
-- [ ] 依存関係の競合がない
+- [x] パッケージが `WebApp.csproj` に追加されている（Azure.AI.OpenAI v2.1.0）
+- [x] ビルドが成功する
+- [x] 依存関係の競合がない
 
 ---
 
 ### Step 12.3: サービスインターフェースの作成 (30分)
 
 #### タスク
-- [ ] `IGptVisionService.cs` インターフェースの作成
-- [ ] メソッドシグネチャの定義
+- [x] `IGptVisionService.cs` インターフェースの作成
+- [x] メソッドシグネチャの定義
 
 #### ファイル: `Services/IGptVisionService.cs`
 
@@ -151,20 +151,20 @@ public interface IGptVisionService
 ```
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] 名前空間が正しい
-- [ ] ビルドが成功する
+- [x] ファイルが作成されている
+- [x] 名前空間が正しい
+- [x] ビルドが成功する
 
 ---
 
 ### Step 12.4: OpenAI Vision サービスの実装 (1.5時間)
 
 #### タスク
-- [ ] `OpenAIVisionService.cs` の実装
-- [ ] OpenAI クライアントの初期化
-- [ ] 画像検証ロジックの実装
-- [ ] テキスト抽出ロジックの実装
-- [ ] エラーハンドリングの実装
+- [x] `OpenAIVisionService.cs` の実装
+- [x] OpenAI クライアントの初期化
+- [x] 画像検証ロジックの実装
+- [x] テキスト抽出ロジックの実装
+- [x] エラーハンドリングの実装
 
 #### ファイル: `Services/OpenAIVisionService.cs`
 
@@ -325,16 +325,16 @@ public class OpenAIVisionService : IGptVisionService
 5. **ロギング**: 各ステップでの詳細なログ出力
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] ビルドが成功する
-- [ ] ロジックが正しい
+- [x] ファイルが作成されている
+- [x] ビルドが成功する
+- [x] ロジックが正しい
 
 ---
 
 ### Step 12.5: Program.cs への依存性注入の追加 (15分)
 
 #### タスク
-- [ ] Program.cs に IGptVisionService の DI 登録を追加
+- [x] Program.cs に IGptVisionService の DI 登録を追加
 
 #### ファイル: `Program.cs` の更新
 
@@ -356,23 +356,26 @@ builder.Services.AddScoped<IGptVisionService, OpenAIVisionService>();
 ```
 
 #### 検証
-- [ ] Program.cs が正しく更新されている
-- [ ] ビルドが成功する
-- [ ] アプリケーションが起動する
+- [x] Program.cs が正しく更新されている
+- [x] ビルドが成功する
+- [x] アプリケーションが起動する
 
 ---
 
 ### Phase 12 完了チェックリスト
 
-- [ ] 既存の Azure OpenAI リソースが確認されている
-- [ ] GPT-4o モデルのデプロイが確認されている
-- [ ] appsettings.Development.json に設定が追加されている
-- [ ] Azure.AI.OpenAI パッケージがインストールされている
-- [ ] IGptVisionService インターフェースが作成されている
-- [ ] OpenAIVisionService が実装されている
-- [ ] Program.cs に DI が登録されている
-- [ ] ビルドが成功する
-- [ ] エラーがない
+- [x] 既存の Azure OpenAI リソースが確認されている
+- [x] GPT-4o モデルのデプロイが確認されている
+- [x] appsettings.Development.json に設定が追加されている
+- [x] Azure.AI.OpenAI パッケージがインストールされている（v2.1.0）
+- [x] IGptVisionService インターフェースが作成されている
+- [x] OpenAIVisionService が実装されている
+- [x] Program.cs に DI が登録されている
+- [x] ビルドが成功する
+- [x] エラーがない
+
+**実装完了日**: 2025年12月22日  
+**コミット**: feature/gpt4o-add-on ブランチ（コミット ID: 0564543）
 
 ---
 
