@@ -32,6 +32,9 @@ builder.Services.AddSingleton(sp =>
 // OCR サービスの登録
 builder.Services.AddScoped<IOcrService, DocumentIntelligenceService>();
 
+// GPT-4o Vision サービスの登録
+builder.Services.AddScoped<IGptVisionService, OpenAIVisionService>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
