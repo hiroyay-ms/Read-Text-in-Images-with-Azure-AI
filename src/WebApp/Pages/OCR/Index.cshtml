@@ -17,11 +17,19 @@
 
                     <!-- ファイルアップロードエリア -->
                     <div class="mb-4">
-                        <div class="input-group mb-3">
-                            <input type="file" 
-                                   class="form-control" 
-                                   id="imageFile" 
-                                   accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
+                        <!-- ドラッグ&ドロップエリア -->
+                        <div id="dropArea" class="border border-2 border-dashed rounded p-4 text-center mb-3">
+                            <p class="mb-2">
+                                <i class="bi bi-cloud-upload" style="font-size: 2rem;"></i>
+                            </p>
+                            <p class="mb-2">ここに画像をドラッグ&ドロップ</p>
+                            <p class="text-muted mb-3">または</p>
+                            <div class="input-group">
+                                <input type="file" 
+                                       class="form-control" 
+                                       id="imageFile" 
+                                       accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
+                            </div>
                         </div>
 
                         <div class="d-grid">

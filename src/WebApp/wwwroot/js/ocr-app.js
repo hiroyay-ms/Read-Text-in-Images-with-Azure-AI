@@ -15,12 +15,65 @@ document.addEventListener('DOMContentLoaded', function () {
     const lineCount = document.getElementById('lineCount');
     const confidence = document.getElementById('confidence');
     const detailsArea = document.getElementById('detailsArea');
+    const dropArea = document.getElementById('dropArea');
 
     let selectedFile = null;
+
+    // ドラッグ&ドロップ機能の初期化
+    initializeDragAndDrop();
 
     // ファイル選択時の処理
     imageFileInput.addEventListener('change', function (e) {
         const file = e.target.files[0];
+        handleFileSelect(file);
+    });
+
+    // ドラッグ&ドロップ機能を初期化
+    function initializeDragAndDrop() {
+        // デフォルトの動作を防止
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // ドラッグ中のスタイル変更
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.add('drag-over');
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.remove('drag-over');
+            }, false);
+        });
+
+        // ファイルがドロップされた時の処理
+        dropArea.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                // FileListオブジェクトをinput要素に設定
+                imageFileInput.files = files;
+                handleFileSelect(files[0]);
+            }
+        }, false);
+
+        // クリックしてファイル選択
+        dropArea.addEventListener('click', (e) => {
+            // input要素自体がクリックされた場合は処理しない
+            if (e.target !== imageFileInput) {
+                imageFileInput.click();
+            }
+        });
+    }
+
+    // ファイル選択の処理を共通化
+    function handleFileSelect(file) {
         if (file) {
             selectedFile = file;
             
@@ -45,7 +98,7 @@ document.addEventListener('DOMContentLoaded', function () {
             noImageText.style.display = 'block';
             runBtn.disabled = true;
         }
-    });
+    }
 
     // Run ボタンクリック時の処理
     runBtn.addEventListener('click', async function () {

@@ -389,10 +389,14 @@ public async Task<bool> ValidateImageAsync(IFormFile imageFile)
 
 ---
 
-### Step 4.4: テキスト抽出の実装 (1-2時間)
+### Step 4.4: テキスト抽出の実装 (1-2時間) ✅
 
 #### タスク
 `ExtractTextAsync` メソッドを実装
+
+**実装内容（2025年12月22日更新）:**
+
+信頼度スコアの計算方法を改善しました。DocumentLine には Confidence プロパティがありませんが、DocumentWord には存在します。
 
 ```csharp
 public async Task<OcrResult> ExtractTextAsync(IFormFile imageFile)
@@ -418,21 +422,56 @@ public async Task<OcrResult> ExtractTextAsync(IFormFile imageFile)
 
         var result = operation.Value;
 
-        // テキスト行を抽出
+        // テキスト行を抽出し、単語の信頼度から行の信頼度を計算
         var lines = new List<TextLine>();
+        var allConfidences = new List<double>();
+
         foreach (var page in result.Pages)
         {
             foreach (var line in page.Lines)
             {
+                // 行に含まれる単語の信頼度を取得
+                var lineConfidences = new List<double>();
+                
+                // page.Words から、この行に含まれる単語を特定して信頼度を取得
+                if (page.Words != null)
+                {
+                    foreach (var word in page.Words)
+                    {
+                        // 単語が行の範囲内にあるかチェック（Spanを使用）
+                        if (line.Spans.Any(lineSpan => 
+                            word.Span.Index >= lineSpan.Index && 
+                            word.Span.Index < lineSpan.Index + lineSpan.Length))
+                        {
+                            if (word.Confidence > 0)
+                            {
+                                lineConfidences.Add(word.Confidence);
+                            }
+                        }
+                    }
+                }
+
+                // 行の平均信頼度を計算（単語がない場合は0）
+                var lineConfidence = lineConfidences.Any() ? lineConfidences.Average() : 0.0;
+                
                 lines.Add(new TextLine
                 {
                     Text = line.Content,
-                    Confidence = line.Confidence ?? 0.0
+                    Confidence = lineConfidence
                 });
+
+                if (lineConfidence > 0)
+                {
+                    allConfidences.Add(lineConfidence);
+                }
             }
         }
 
-        _logger.LogInformation("OCR処理完了: {LineCount} 行抽出", lines.Count);
+        // 全体の平均信頼度を計算
+        var overallConfidence = allConfidences.Any() ? allConfidences.Average() : 0.0;
+
+        _logger.LogInformation("OCR処理完了: {LineCount} 行抽出、平均信頼度: {Confidence:P1}", 
+            lines.Count, overallConfidence);
 
         return new OcrResult
         {
@@ -440,7 +479,7 @@ public async Task<OcrResult> ExtractTextAsync(IFormFile imageFile)
             ExtractedText = result.Content,
             Lines = lines,
             PageCount = result.Pages.Count,
-            ConfidenceScore = lines.Average(l => l.Confidence)
+            ConfidenceScore = overallConfidence
         };
     }
     catch (RequestFailedException ex)
@@ -460,12 +499,25 @@ public async Task<OcrResult> ExtractTextAsync(IFormFile imageFile)
 - [x] メソッドが実装されている
 - [x] エラーハンドリングが適切
 - [x] プロジェクトがビルドできる
+- [x] 実際の信頼度スコアが計算される（DocumentWord.Confidence を使用）
 
-**注意**: Azure.AI.FormRecognizer 4.1.0 では `DocumentLine` に `Confidence` プロパティがないため、固定値 1.0 を使用しています。
+**信頼度スコアの計算方法（2025年12月22日更新）:**
+
+Azure.AI.FormRecognizer 4.1.0 では以下のように信頼度を取得します：
+
+1. **DocumentLine**: Confidence プロパティは存在しない
+2. **DocumentWord**: Confidence プロパティが存在（float 型）
+3. **実装方法**:
+   - 各行に含まれる単語（DocumentWord）の Confidence を取得
+   - Span.Index と Span.Length を使用して行に含まれる単語を特定
+   - 行の信頼度 = その行に含まれる単語の Confidence の平均値
+   - 全体の信頼度 = すべての行の信頼度の平均値
+
+この実装により、UI に表示される信頼度スコアが実際の OCR 処理結果を反映するようになりました。
 
 ---
 
-## Phase 5: Program.cs の設定 (1時間)
+## Phase 5: Program.cs の設定 (1時間) ✅ **完了**
 
 ### ゴール
 依存性注入とミドルウェアを設定
@@ -1225,129 +1277,92 @@ document.addEventListener('DOMContentLoaded', () => {
 
 ---
 
-## Phase 9: UI/UXの改善 (3-4時間) 🔄 **一部実装済み**
+## Phase 9: UI/UXの改善 (3-4時間) ✅ **完了**
 
 ### ゴール
 ユーザー体験を向上させる
+
+### 実装完了日
+2025年12月22日
 
 ### 実装済みの改善項目
 1. **レスポンシブデザイン**: Bootstrap 5 による様々なデバイス対応
 2. **動的な状態管理**: 3つの UI 状態（初期、ローディング、結果）の適切な表示
 3. **視覚的フィードバック**: ローディングスピナー、コピー完了通知
 4. **ユーザビリティ**: 画像の即時プレビュー、Run ボタンの状態管理
+5. **ドラッグ&ドロップ**: ファイルのドラッグ&ドロップアップロード機能
+6. **カスタムCSS**: ドロップエリアのスタイル、レスポンシブ調整、その他の視覚的改善
 
-### 今後実装可能な改善項目
+### Step 9.1: ドラッグ&ドロップ機能 (2時間) ✅
 
-### Step 9.1: ドラッグ&ドロップ機能 (2時間) 🔜 **未実装**
+#### 実装内容
 
-#### タスク
-`ocr-app.js` にドラッグ&ドロップ機能を追加
-
-```javascript
-// OcrApp クラスに追加
-initializeDragAndDrop() {
-    const dropArea = document.getElementById('dropArea'); // HTMLに追加が必要
-
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        dropArea.addEventListener(eventName, preventDefaults, false);
-    });
-
-    function preventDefaults(e) {
-        e.preventDefault();
-        e.stopPropagation();
-    }
-
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropArea.addEventListener(eventName, () => {
-            dropArea.classList.add('drag-over');
-        }, false);
-    });
-
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropArea.addEventListener(eventName, () => {
-            dropArea.classList.remove('drag-over');
-        }, false);
-    });
-
-    dropArea.addEventListener('drop', (e) => {
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            this.fileInput.files = files;
-            this.handleFileSelect({ target: { files: files } });
-        }
-    }, false);
-}
-```
-
-#### HTMLの変更
+1. **HTML**: `Pages/OCR/Index.cshtml` にドロップエリアを追加
 ```html
-<!-- Index.cshtml に追加 -->
-<div id="dropArea" class="border border-2 border-dashed rounded p-5 text-center mb-3">
-    <p class="mb-0">ここに画像をドラッグ&ドロップ または</p>
-    <!-- 既存のfile inputをここに移動 -->
+<div id="dropArea" class="border border-2 border-dashed rounded p-4 text-center mb-3">
+    <p class="mb-2">
+        <i class="bi bi-cloud-upload" style="font-size: 2rem;"></i>
+    </p>
+    <p class="mb-2">ここに画像をドラッグ&ドロップ</p>
+    <p class="text-muted mb-3">または</p>
+    <div class="input-group">
+        <input type="file" class="form-control" id="imageFile" 
+               accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
+    </div>
 </div>
 ```
 
+2. **JavaScript**: `ocr-app.js` に `initializeDragAndDrop()` メソッドを実装
+   - デフォルトの動作を防止（dragenter, dragover, dragleave, drop）
+   - ドラッグ中のスタイル変更（`.drag-over` クラスの追加/削除）
+   - ファイルドロップ時の処理（`imageFileInput.files` への設定、`handleFileSelect()` 呼び出し）
+   - クリック可能なドロップエリア（`imageFileInput.click()` を呼び出し）
+
+3. **共通化**: ファイル選択処理を `handleFileSelect()` 関数として共通化
+
 #### 検証
-- [ ] ドラッグ&ドロップが動作する
-- [ ] ドラッグ中の視覚的フィードバックがある
+- [x] ドラッグ&ドロップが動作する
+- [x] ドラッグ中の視覚的フィードバックがある（青いハイライト）
+- [x] ホバー時の視覚的フィードバック（背景色変更）
+- [x] ドロップエリアをクリックしてもファイル選択可能
 
 ---
 
-### Step 9.2: レスポンシブデザインの調整 (1-2時間) ✅ **実装済み**
+### Step 9.2: カスタムCSSとレスポンシブデザインの調整 (1-2時間) ✅
 
-#### 実装状況
-Bootstrap 5 により基本的なレスポンシブデザインは実装済み。
-以下のカスタムスタイル追加が可能:
+#### 実装内容
 
-#### タスク（オプション）
-`wwwroot/css/site.css` にカスタムスタイルを追加
+`wwwroot/css/site.css` に以下のカスタムスタイルを追加:
 
-```css
-/* ドラッグ&ドロップエリア */
-#dropArea {
-    background-color: #f8f9fa;
-    transition: all 0.3s ease;
-    cursor: pointer;
-}
+1. **ドラッグ&ドロップエリア**
+   - 背景色とトランジション効果
+   - ホバー時の背景色変更
+   - ドラッグオーバー時のハイライト（青い背景、太いボーダー）
+   - カーソルをポインターに設定
 
-#dropArea.drag-over {
-    background-color: #e7f3ff;
-    border-color: #0d6efd !important;
-}
+2. **レスポンシブ対応**（モバイル：768px以下）
+   - カラムを縦方向に配置
+   - 画像プレビューの高さ制限（300px）
+   - カードボディのパディング調整
 
-/* レスポンシブ対応 */
-@media (max-width: 768px) {
-    .row {
-        flex-direction: column;
-    }
-    
-    #imagePreview {
-        max-height: 300px;
-        object-fit: contain;
-    }
-}
+3. **ローディングアニメーション**
+   - スピナーサイズを 3rem × 3rem に設定
 
-/* ローディングアニメーション */
-.spinner-border {
-    width: 3rem;
-    height: 3rem;
-}
+4. **結果エリア**
+   - `#extractedText` に等幅フォント適用（Consolas, Monaco, Courier New）
+   - フォントサイズ 14px、行間 1.6
 
-/* 結果エリア */
-#extractedText {
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 14px;
-    line-height: 1.6;
-}
-```
+5. **画像プレビュー**
+   - コンテナの最小/最大高さ設定
+   - 画像のオブジェクトフィット設定
 
 #### 検証
 - [x] デスクトップで正しく表示される
-- [x] タブレットで正しく表示される（Bootstrap のレスポンシブ機能により）
-- [x] スマートフォンで正しく表示される（Bootstrap のレスポンシブ機能により）
-
-**注意**: カスタム CSS は現在最小限。将来的にさらなる調整が可能。
+- [x] タブレットで正しく表示される（Bootstrap + カスタムCSS）
+- [x] スマートフォンで正しく表示される（Bootstrap + カスタムCSS）
+- [x] ドラッグ&ドロップエリアのスタイルが適用される
+- [x] ホバーエフェクトが動作する
+- [x] ドラッグオーバーエフェクトが動作する
 
 ---
 
