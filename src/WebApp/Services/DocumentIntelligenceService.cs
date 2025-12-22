@@ -132,15 +132,25 @@ public class DocumentIntelligenceService : IOcrService
                 ConfidenceScore = overallConfidence
             };
         }
+        catch (RequestFailedException ex) when (ex.Status == 429)
+        {
+            _logger.LogWarning("Azure API rate limit exceeded");
+            throw new InvalidOperationException("リクエストが多すぎます。しばらく待ってから再試行してください。");
+        }
+        catch (RequestFailedException ex) when (ex.Status == 401 || ex.Status == 403)
+        {
+            _logger.LogError(ex, "Azure API 認証エラー");
+            throw new InvalidOperationException("Azure Document Intelligence の認証に失敗しました。設定を確認してください。");
+        }
         catch (RequestFailedException ex)
         {
             _logger.LogError(ex, "Azure API エラー: {StatusCode}", ex.Status);
-            return new OcrResult { Success = false };
+            throw new InvalidOperationException($"OCR処理中にエラーが発生しました（エラーコード: {ex.Status}）");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "OCR処理中にエラーが発生しました");
-            return new OcrResult { Success = false };
+            _logger.LogError(ex, "OCR処理中に予期しないエラーが発生しました");
+            throw new InvalidOperationException("OCR処理中に予期しないエラーが発生しました。");
         }
     }
 }

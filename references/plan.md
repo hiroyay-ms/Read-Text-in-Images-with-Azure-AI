@@ -3,7 +3,7 @@
 画像からテキストを抽出するOCRアプリケーションの詳細な実装計画
 
 **最終更新日**: 2025年12月22日  
-**実装状況**: Phase 1-8 完了、Phase 9 一部実装済み
+**実装状況**: Phase 1-10 完了、Phase 11 スキップ
 
 ---
 
@@ -19,9 +19,9 @@
 | Phase 6 | 基本UIの実装 | ✅ 完了 | 2025-12-22 |
 | Phase 7 | JavaScript の実装 | ✅ 完了 | 2025-12-22 (Phase 6で実装) |
 | Phase 8 | 動作テストとデバッグ | ✅ 完了 | 2025-12-22 |
-| Phase 9 | UI/UXの改善 | 🔄 一部実装 | - |
-| Phase 10 | エラーハンドリングの強化 | 🔜 未実装 | - |
-| Phase 11+ | その他の拡張機能 | 🔜 未実装 | - |
+| Phase 9 | UI/UXの改善 | ✅ 完了 | 2025-12-22 |
+| Phase 10 | エラーハンドリングの強化 | ✅ 完了 | 2025-12-22 |
+| Phase 11 | ロギングの設定 | ⏸️ スキップ | - |
 
 ---
 
@@ -41,7 +41,10 @@
 - ✅ 3つの UI 状態管理（初期、ローディング、結果）
 - ✅ ローディングスピナーアニメーション
 - ✅ 視覚的フィードバック
-- ✅ ナビゲーション（Home, OCR, Privacy）
+- ✅ ドラッグ&ドロップアップロード機能
+- ✅ カスタムCSS（ドロップエリア、レスポンシブ調整）
+- ✅ 青色から紫色へのグラデーション背景
+- ✅ ナビゲーション（Home, OCR）
 
 ### アーキテクチャ
 - ✅ ディレクトリ構造の整理（Pages/OCR）
@@ -49,6 +52,12 @@
 - ✅ サービス層の分離
 - ✅ モデルクラスによる型安全性
 - ✅ セキュリティ（CSRF、入力検証）
+
+### エラーハンドリング
+- ✅ Azure API エラーの詳細なハンドリング（429, 401, 403 等）
+- ✅ ユーザーフレンドリーなエラーメッセージ
+- ✅ 例外処理の層化（Service 層、PageModel 層）
+- ✅ 詳細なログ出力
 
 ---
 
@@ -1395,14 +1404,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
 ---
 
-## Phase 10: エラーハンドリングの強化 (2時間) 🔜 **未実装**
+## Phase 10: エラーハンドリングの強化 (2時間) ✅ **完了**
 
 ### ゴール
 ユーザーフレンドリーなエラーメッセージと回復機能
 
-### Step 10.1: より詳細なエラーハンドリング (1時間)
+### 実装完了日
+2025年12月22日
 
-#### `DocumentIntelligenceService.cs` の更新
+### Step 10.1: より詳細なエラーハンドリング (1時間) ✅
+
+### Step 10.1: より詳細なエラーハンドリング (1時間) ✅
+
+#### 実装内容
+
+1. **`DocumentIntelligenceService.cs` の更新**
+
+Azure Document Intelligence API のエラーを細かくキャッチし、ユーザーに適切なメッセージを返す：
 
 ```csharp
 catch (RequestFailedException ex) when (ex.Status == 429)
@@ -1420,40 +1438,53 @@ catch (RequestFailedException ex)
     _logger.LogError(ex, "Azure API エラー: {StatusCode}", ex.Status);
     throw new InvalidOperationException($"OCR処理中にエラーが発生しました（エラーコード: {ex.Status}）");
 }
-```
-
-#### `Index.cshtml.cs` の更新
-
-```csharp
-public async Task<IActionResult> OnPostUploadAsync(IFormFile imageFile)
+catch (Exception ex)
 {
-    try
-    {
-        // 既存のコード
-    }
-    catch (InvalidOperationException ex)
-    {
-        _logger.LogWarning(ex, "バリデーションエラー");
-        return BadRequest(new { error = ex.Message });
-    }
-    catch (Exception ex)
-    {
-        _logger.LogError(ex, "予期しないエラー");
-        return StatusCode(500, new { error = "予期しないエラーが発生しました。しばらく待ってから再試行してください。" });
-    }
+    _logger.LogError(ex, "OCR処理中に予期しないエラーが発生しました");
+    throw new InvalidOperationException("OCR処理中に予期しないエラーが発生しました。");
 }
 ```
 
+**エラータイプ別の処理:**
+- **429 (Rate Limit)**: レート制限超過時のメッセージ
+- **401/403 (認証エラー)**: 認証失敗時のメッセージ
+- **その他の RequestFailedException**: ステータスコードを含むエラーメッセージ
+- **一般的な Exception**: 予期しないエラーのメッセージ
+
+2. **`Index.cshtml.cs` の更新**
+
+```csharp
+catch (InvalidOperationException ex)
+{
+    _logger.LogWarning(ex, "バリデーションエラー");
+    return BadRequest(new { error = ex.Message });
+}
+catch (Exception ex)
+{
+    _logger.LogError(ex, "予期しないエラー");
+    return StatusCode(500, new { error = "予期しないエラーが発生しました。しばらく待ってから再試行してください。" });
+}
+```
+
+**例外処理の層:**
+- **InvalidOperationException**: Service 層からスローされたビジネスロジックエラーを BadRequest (400) で返却
+- **Exception**: 予期しないエラーを InternalServerError (500) で返却
+
 #### 検証
-- [ ] 適切なエラーメッセージが表示される
-- [ ] ログに詳細情報が記録される
+- [x] 適切なエラーメッセージが表示される
+- [x] ログに詳細情報が記録される
+- [x] コードが正常にビルドされる
 
 ---
 
-### Step 10.2: リトライ機能の追加（オプション） (1時間)
+### Step 10.2: リトライ機能の追加（オプション） (1時間) ⏸️ **スキップ**
 
-#### タスク
-簡単なリトライロジックを追加（必要に応じて）
+### Step 10.2: リトライ機能の追加（オプション） (1時間) ⏸️ **スキップ**
+
+#### 状態
+オプショナル機能のため、現時点ではスキップ。必要に応じて将来実装可能。
+
+#### 参考: 実装例
 
 ```javascript
 // ocr-app.js に追加
@@ -1484,10 +1515,14 @@ isRetryableError(error) {
 
 ---
 
-## Phase 11: ロギングの設定 (1-2時間)
+## Phase 11: ロギングの設定 (1-2時間) ⏸️ **スキップ**
+
+### 状態
+ASP.NET Core のデフォルトロギングで十分なため、Serilog の導入はスキップ。
+必要に応じて将来実装可能。
 
 ### ゴール
-Serilogを導入して構造化ログを実装
+Serilogを導入して構造化ログを実装（オプショナル）
 
 ### Step 11.1: Serilogのインストール (30分)
 

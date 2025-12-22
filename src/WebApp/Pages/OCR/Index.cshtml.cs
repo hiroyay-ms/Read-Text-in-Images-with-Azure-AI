@@ -41,10 +41,15 @@ public class IndexModel : PageModel
 
             return new JsonResult(result);
         }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "バリデーションエラー");
+            return BadRequest(new { error = ex.Message });
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "OCR処理中にエラーが発生しました");
-            return StatusCode(500, new { error = "処理中にエラーが発生しました" });
+            _logger.LogError(ex, "予期しないエラー");
+            return StatusCode(500, new { error = "予期しないエラーが発生しました。しばらく待ってから再試行してください。" });
         }
     }
 }
