@@ -1,0 +1,120 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "GPT-4o Vision Text Extractor";
+}
+
+<style>
+    body {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+    }
+</style>
+
+<form method="post" id="mainForm">
+    @Html.AntiForgeryToken()
+</form>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card shadow">
+                <div class="card-body p-4">
+                    <h1 class="card-title text-center mb-4">Azure OpenAI GPT-4o - Vision OCR</h1>
+
+                    <!-- カスタムプロンプト入力エリア -->
+                    <div class="mb-4">
+                        <label for="customPrompt" class="form-label">カスタムプロンプト（オプション）</label>
+                        <textarea class="form-control" 
+                                  id="customPrompt" 
+                                  rows="3" 
+                                  placeholder="例: この画像から表の内容をMarkdown形式で抽出してください"></textarea>
+                        <small class="form-text text-muted">
+                            空欄の場合、デフォルトプロンプトを使用します
+                        </small>
+                    </div>
+
+                    <!-- ファイルアップロードエリア -->
+                    <div class="mb-4">
+                        <!-- ドラッグ&ドロップエリア -->
+                        <div id="dropArea" class="border border-2 border-dashed rounded p-4 text-center mb-3">
+                            <p class="mb-2">
+                                <i class="bi bi-cloud-upload" style="font-size: 2rem;"></i>
+                            </p>
+                            <p class="mb-2">ここに画像をドラッグ&ドロップ</p>
+                            <p class="text-muted mb-3">または</p>
+                            <p class="mb-0">
+                                <a href="#" id="fileSelectLink" class="text-decoration-none">
+                                    <i class="bi bi-file-earmark-arrow-up"></i> ファイルの選択
+                                </a>
+                            </p>
+                            <input type="file" 
+                                   class="d-none" 
+                                   id="imageFile" 
+                                   accept=".jpg,.jpeg,.png,.gif,.webp">
+                        </div>
+
+                        <div class="d-grid">
+                            <button class="btn btn-primary btn-lg" id="runBtn" disabled>
+                                <i class="bi bi-play-circle"></i> Run
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- エラー表示 -->
+                    <div id="errorArea" class="alert alert-danger" style="display: none;" role="alert"></div>
+
+                    <!-- 結果表示エリア -->
+                    <div id="resultArea">
+                        <div class="row">
+                            <!-- 左側: 画像プレビュー -->
+                            <div class="col-md-5">
+                                <h5>アップロードされた画像 <span id="fileNameDisplay" class="text-muted" style="font-size: 0.9rem;"></span></h5>
+                                <div id="imagePreviewContainer" class="border rounded d-flex align-items-center justify-content-center" style="min-height: 300px; background-color: #f8f9fa;">
+                                    <img id="imagePreview" class="img-fluid rounded" style="display: none; max-height: 500px;" alt="プレビュー">
+                                    <p id="noImageText" class="text-muted">画像が選択されていません</p>
+                                </div>
+                            </div>
+
+                            <!-- 右側: 抽出されたテキスト -->
+                            <div class="col-md-7">
+                                <h5>抽出されたテキスト</h5>
+                                <div id="textAreaContainer" class="border rounded p-3 position-relative d-flex align-items-center justify-content-center" style="min-height: 300px; background-color: #f8f9fa;">
+                                    <!-- 初期メッセージ -->
+                                    <p id="noTextMessage" class="text-muted mb-0">テキストがまだ抽出されていません</p>
+                                    
+                                    <!-- ローディング表示 -->
+                                    <div id="loadingInText" class="text-center" style="display: none;">
+                                        <div class="spinner-border text-primary mb-2" role="status">
+                                            <span class="visually-hidden">処理中...</span>
+                                        </div>
+                                        <p class="text-muted mb-0">GPT-4o で画像を解析しています...</p>
+                                    </div>
+                                    
+                                    <!-- 抽出されたテキスト -->
+                                    <pre id="extractedText" class="mb-0 w-100" style="display: none; white-space: pre-wrap; word-wrap: break-word;"></pre>
+                                </div>
+                                <button class="btn btn-secondary mt-2" id="copyBtn" disabled>
+                                    <i class="bi bi-clipboard"></i> コピー
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 詳細情報 -->
+                        <div class="mt-3" id="detailsArea" style="display: none;">
+                            <small class="text-muted">
+                                処理方法: <span id="method"></span> | 
+                                文字数: <span id="charCount"></span> | 
+                                処理日時: <span id="processedAt"></span>
+                            </small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="~/js/gpt-vision.js"></script>
+}

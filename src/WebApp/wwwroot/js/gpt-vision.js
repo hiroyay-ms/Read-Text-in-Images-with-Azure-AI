@@ -1,0 +1,263 @@
+// GPT-4o Vision OCR アプリケーションのクライアントサイドスクリプト
+
+document.addEventListener('DOMContentLoaded', function () {
+    const imageFileInput = document.getElementById('imageFile');
+    const fileSelectLink = document.getElementById('fileSelectLink');
+    const customPrompt = document.getElementById('customPrompt');
+    const runBtn = document.getElementById('runBtn');
+    const errorArea = document.getElementById('errorArea');
+    const imagePreview = document.getElementById('imagePreview');
+    const noImageText = document.getElementById('noImageText');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const textAreaContainer = document.getElementById('textAreaContainer');
+    const noTextMessage = document.getElementById('noTextMessage');
+    const loadingInText = document.getElementById('loadingInText');
+    const extractedText = document.getElementById('extractedText');
+    const copyBtn = document.getElementById('copyBtn');
+    const method = document.getElementById('method');
+    const charCount = document.getElementById('charCount');
+    const processedAt = document.getElementById('processedAt');
+    const detailsArea = document.getElementById('detailsArea');
+    const dropArea = document.getElementById('dropArea');
+
+    let selectedFile = null;
+
+    // ドラッグ&ドロップ機能の初期化
+    initializeDragAndDrop();
+
+    // 「ファイルの選択」リンククリック時の処理
+    fileSelectLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        imageFileInput.click();
+    });
+
+    // ファイル選択時の処理
+    imageFileInput.addEventListener('change', function (e) {
+        const file = e.target.files[0];
+        handleFileSelect(file);
+    });
+
+    // ドラッグ&ドロップ機能を初期化
+    function initializeDragAndDrop() {
+        // デフォルトの動作を防止
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // ドラッグ中のスタイル変更
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.add('drag-over');
+            }, false);
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, () => {
+                dropArea.classList.remove('drag-over');
+            }, false);
+        });
+
+        // ファイルがドロップされた時の処理
+        dropArea.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                // FileListオブジェクトをinput要素に設定
+                imageFileInput.files = files;
+                handleFileSelect(files[0]);
+            }
+        }, false);
+    }
+
+    // ファイル選択の処理を共通化
+    function handleFileSelect(file) {
+        if (file) {
+            selectedFile = file;
+            
+            // ファイル名を表示
+            fileNameDisplay.textContent = `(${file.name})`;
+            
+            // 画像プレビューを表示
+            const reader = new FileReader();
+            reader.onload = function (event) {
+                imagePreview.src = event.target.result;
+                imagePreview.style.display = 'block';
+                noImageText.style.display = 'none';
+                runBtn.disabled = false;
+            };
+            reader.readAsDataURL(file);
+
+            // エラーをクリア
+            hideError();
+            
+            // テキスト表示エリアをリセット
+            resetTextArea();
+        } else {
+            selectedFile = null;
+            fileNameDisplay.textContent = '';
+            imagePreview.style.display = 'none';
+            noImageText.style.display = 'block';
+            runBtn.disabled = true;
+        }
+    }
+
+    // Run ボタンクリック時の処理
+    runBtn.addEventListener('click', async function () {
+        if (!selectedFile) {
+            showError('ファイルが選択されていません');
+            return;
+        }
+
+        // UI を更新
+        runBtn.disabled = true;
+        hideError();
+        showLoading();
+
+        try {
+            // FormData を作成
+            const formData = new FormData();
+            formData.append('imageFile', selectedFile);
+            
+            // カスタムプロンプトを追加（空でない場合）
+            const prompt = customPrompt.value.trim();
+            if (prompt) {
+                formData.append('customPrompt', prompt);
+            }
+            
+            // CSRF トークンを追加
+            const token = document.querySelector('input[name="__RequestVerificationToken"]').value;
+            formData.append('__RequestVerificationToken', token);
+
+            // サーバーにアップロード
+            const response = await fetch('/GPT?handler=Extract', {
+                method: 'POST',
+                body: formData
+            });
+
+            hideLoading();
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                let errorMessage = 'エラーが発生しました';
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorMessage = errorJson.message || errorJson.error || errorMessage;
+                } catch {
+                    errorMessage = errorText || errorMessage;
+                }
+                throw new Error(errorMessage);
+            }
+
+            const result = await response.json();
+
+            // 結果を表示
+            displayResult(result);
+        } catch (error) {
+            hideLoading();
+            resetTextArea();
+            showError(error.message);
+            runBtn.disabled = false;
+        }
+    });
+
+    // コピーボタンクリック時の処理
+    copyBtn.addEventListener('click', function () {
+        const text = extractedText.textContent;
+        navigator.clipboard.writeText(text).then(function () {
+            // 成功時のフィードバック
+            const originalText = copyBtn.innerHTML;
+            copyBtn.innerHTML = '<i class="bi bi-check-circle"></i> コピーしました';
+            copyBtn.classList.remove('btn-secondary');
+            copyBtn.classList.add('btn-success');
+
+            setTimeout(function () {
+                copyBtn.innerHTML = originalText;
+                copyBtn.classList.remove('btn-success');
+                copyBtn.classList.add('btn-secondary');
+            }, 2000);
+        }).catch(function (err) {
+            showError('コピーに失敗しました: ' + err);
+        });
+    });
+
+    // 結果を表示する関数
+    function displayResult(result) {
+        // すべての要素を非表示
+        noTextMessage.style.display = 'none';
+        loadingInText.style.display = 'none';
+        
+        // テキストエリアを左上揃えに変更
+        textAreaContainer.classList.remove('align-items-center', 'justify-content-center');
+        textAreaContainer.classList.add('align-items-start', 'justify-content-start');
+        
+        // 抽出されたテキストを表示
+        extractedText.textContent = result.extractedText || 'テキストが検出されませんでした';
+        extractedText.style.display = 'block';
+
+        // 詳細情報を表示
+        method.textContent = result.method || 'GPT-4o';
+        charCount.textContent = result.characterCount || 0;
+        
+        // 処理日時をフォーマット
+        if (result.processedAt) {
+            const date = new Date(result.processedAt);
+            processedAt.textContent = date.toLocaleString('ja-JP');
+        } else {
+            processedAt.textContent = 'N/A';
+        }
+
+        // 詳細情報エリアを表示
+        detailsArea.style.display = 'block';
+
+        // コピーボタンを有効化
+        copyBtn.disabled = false;
+
+        // Run ボタンを再度有効化
+        runBtn.disabled = false;
+    }
+
+    // ローディングを表示する関数
+    function showLoading() {
+        noTextMessage.style.display = 'none';
+        extractedText.style.display = 'none';
+        loadingInText.style.display = 'block';
+        
+        // テキストエリアを中央揃えに
+        textAreaContainer.classList.add('align-items-center', 'justify-content-center');
+        textAreaContainer.classList.remove('align-items-start', 'justify-content-start');
+    }
+
+    // ローディングを非表示にする関数
+    function hideLoading() {
+        loadingInText.style.display = 'none';
+    }
+
+    // テキストエリアをリセットする関数
+    function resetTextArea() {
+        noTextMessage.style.display = 'block';
+        extractedText.style.display = 'none';
+        loadingInText.style.display = 'none';
+        copyBtn.disabled = true;
+        detailsArea.style.display = 'none';
+        
+        // テキストエリアを中央揃えに
+        textAreaContainer.classList.add('align-items-center', 'justify-content-center');
+        textAreaContainer.classList.remove('align-items-start', 'justify-content-start');
+    }
+
+    // エラーを表示する関数
+    function showError(message) {
+        errorArea.textContent = message;
+        errorArea.style.display = 'block';
+    }
+
+    // エラーを非表示にする関数
+    function hideError() {
+        errorArea.style.display = 'none';
+    }
+});

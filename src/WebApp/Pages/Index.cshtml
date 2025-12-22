@@ -9,27 +9,66 @@
     <p class="lead">Azure AI を活用した画像からテキスト抽出のデモアプリケーションです。</p>
     
     <div class="mt-5">
-        <div class="card mx-auto" style="max-width: 600px;">
-            <div class="card-body">
-                <h5 class="card-title">
-                    <i class="bi bi-file-text"></i> OCR (文字認識)
-                </h5>
-                <p class="card-text">
-                    画像やドキュメントからテキストを抽出します。<br>
-                    Azure Document Intelligence を使用して高精度な文字認識を実現します。
-                </p>
-                <a href="/OCR" class="btn btn-primary btn-lg">
-                    <i class="bi bi-arrow-right-circle"></i> OCR を試す
-                </a>
+        <div class="row">
+            <!-- Document Intelligence OCR -->
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-file-text"></i> OCR (Document Intelligence)
+                        </h5>
+                        <p class="card-text">
+                            画像やドキュメントからテキストを抽出します。<br>
+                            Azure Document Intelligence を使用して高精度な文字認識を実現します。
+                        </p>
+                        <ul class="list-unstyled">
+                            <li><i class="bi bi-check-circle text-success"></i> 高精度な文字認識</li>
+                            <li><i class="bi bi-check-circle text-success"></i> 座標情報の取得</li>
+                            <li><i class="bi bi-check-circle text-success"></i> 複数ページ対応</li>
+                        </ul>
+                        <a href="/OCR" class="btn btn-primary btn-lg w-100">
+                            <i class="bi bi-arrow-right-circle"></i> Document Intelligence OCR を試す
+                        </a>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- GPT-4o Vision OCR -->
+            <div class="col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-robot"></i> OCR (GPT-4o)
+                        </h5>
+                        <p class="card-text">
+                            GPT-4o を使用した柔軟なテキスト抽出。<br>
+                            カスタムプロンプトで抽出方法を自由に指定できます。
+                        </p>
+                        <ul class="list-unstyled">
+                            <li><i class="bi bi-check-circle text-success"></i> 文脈理解</li>
+                            <li><i class="bi bi-check-circle text-success"></i> カスタム指示</li>
+                            <li><i class="bi bi-check-circle text-success"></i> 柔軟な出力形式</li>
+                        </ul>
+                        <a href="/GPT" class="btn btn-success btn-lg w-100">
+                            <i class="bi bi-arrow-right-circle"></i> GPT-4o OCR を試す
+                        </a>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
     
     <div class="mt-5">
+        <div class="alert alert-info" role="alert">
+            <h6><i class="bi bi-info-circle"></i> 使い分けのヒント</h6>
+            <ul class="mb-0">
+                <li><strong>Document Intelligence:</strong> 高精度・高速・低コストで、座標情報が必要な場合に最適</li>
+                <li><strong>GPT-4o:</strong> 文脈理解が必要、または特定の形式での抽出が必要な場合に最適</li>
+            </ul>
+        </div>
         <p class="text-muted">
             <small>
-                このアプリケーションは Azure Document Intelligence API を使用しています。<br>
-                対応フォーマット: JPG, PNG, PDF, TIFF, BMP
+                対応フォーマット: JPG, PNG, PDF, TIFF, BMP (Document Intelligence) | JPG, PNG, GIF, WebP (GPT-4o)
             </small>
         </p>
     </div>
