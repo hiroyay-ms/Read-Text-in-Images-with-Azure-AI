@@ -1337,17 +1337,22 @@ src/WebApp/
 │   ├── OcrError.cs
 │   └── FileUploadOptions.cs
 ├── Pages/
-│   ├── OCR/
+│   ├── Index.cshtml                      # ホームページ
+│   ├── Index.cshtml.cs
+│   ├── OCR/                              # Document Intelligence 機能
 │   │   ├── Index.cshtml                  # Document Intelligence UI
-│   │   ├── Index.cshtml.cs
-│   │   ├── Vision.cshtml                 # GPT-4o UI
-│   │   └── Vision.cshtml.cs
+│   │   └── Index.cshtml.cs
+│   ├── GPT/                              # GPT-4o 機能（新規追加）
+│   │   ├── Index.cshtml                  # GPT-4o UI
+│   │   └── Index.cshtml.cs
 │   └── Shared/
 │       └── _Layout.cshtml
 ├── wwwroot/
+│   ├── css/
+│   │   └── site.css
 │   └── js/
 │       ├── ocr-app.js                    # Document Intelligence JS
-│       └── vision-ocr.js                 # GPT-4o JS
+│       └── gpt-vision.js                 # GPT-4o JS
 └── Program.cs
 ```
 
