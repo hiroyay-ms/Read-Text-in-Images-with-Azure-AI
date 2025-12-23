@@ -5,4 +5,7 @@
 - `references/image2.png` : アプリケーションの UI モックです。ドキュメント アップロード済み＆ OCR 操作完了の画面
 - `references/architecture.md` : アプリケーションのアーキテクチャドキュメントです。
 - `features.md`: 実装する機能の一覧です。
-- `plan.md`: 段階的な実装計画です。
+- `plan.md`: 段階的な実装計画です。(Document Intelligence サービスの実装を含む)
+- `plan_add-on-1.md` : 追加機能 1 の実装計画です。(GPT-4o サービスの実装を含む)
+
+コミット メッセージは日本語で記述してください。

@@ -1,8 +1,9 @@
-// OCR アプリケーションのクライアントサイドスクリプト
+// GPT-4o Vision OCR アプリケーションのクライアントサイドスクリプト
 
 document.addEventListener('DOMContentLoaded', function () {
     const imageFileInput = document.getElementById('imageFile');
     const fileSelectLink = document.getElementById('fileSelectLink');
+    const customPrompt = document.getElementById('customPrompt');
     const runBtn = document.getElementById('runBtn');
     const errorArea = document.getElementById('errorArea');
     const imagePreview = document.getElementById('imagePreview');
@@ -13,9 +14,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const loadingInText = document.getElementById('loadingInText');
     const extractedText = document.getElementById('extractedText');
     const copyBtn = document.getElementById('copyBtn');
-    const pageCount = document.getElementById('pageCount');
-    const lineCount = document.getElementById('lineCount');
-    const confidence = document.getElementById('confidence');
+    const method = document.getElementById('method');
+    const charCount = document.getElementById('charCount');
+    const processedAt = document.getElementById('processedAt');
     const detailsArea = document.getElementById('detailsArea');
     const dropArea = document.getElementById('dropArea');
 
@@ -122,12 +123,18 @@ document.addEventListener('DOMContentLoaded', function () {
             const formData = new FormData();
             formData.append('imageFile', selectedFile);
             
+            // カスタムプロンプトを追加（空でない場合）
+            const prompt = customPrompt.value.trim();
+            if (prompt) {
+                formData.append('customPrompt', prompt);
+            }
+            
             // CSRF トークンを追加
             const token = document.querySelector('input[name="__RequestVerificationToken"]').value;
             formData.append('__RequestVerificationToken', token);
 
             // サーバーにアップロード
-            const response = await fetch('/OCR?handler=Upload', {
+            const response = await fetch('/GPT?handler=Extract', {
                 method: 'POST',
                 body: formData
             });
@@ -139,7 +146,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 let errorMessage = 'エラーが発生しました';
                 try {
                     const errorJson = JSON.parse(errorText);
-                    errorMessage = errorJson.error || errorMessage;
+                    errorMessage = errorJson.message || errorJson.error || errorMessage;
                 } catch {
                     errorMessage = errorText || errorMessage;
                 }
@@ -193,11 +200,16 @@ document.addEventListener('DOMContentLoaded', function () {
         extractedText.style.display = 'block';
 
         // 詳細情報を表示
-        pageCount.textContent = result.pageCount || 0;
-        lineCount.textContent = result.lines ? result.lines.length : 0;
-        confidence.textContent = result.confidenceScore 
-            ? (result.confidenceScore * 100).toFixed(1) + '%'
-            : 'N/A';
+        method.textContent = result.method || 'GPT-4o';
+        charCount.textContent = result.characterCount || 0;
+        
+        // 処理日時をフォーマット
+        if (result.processedAt) {
+            const date = new Date(result.processedAt);
+            processedAt.textContent = date.toLocaleString('ja-JP');
+        } else {
+            processedAt.textContent = 'N/A';
+        }
 
         // 詳細情報エリアを表示
         detailsArea.style.display = 'block';
@@ -247,6 +259,5 @@ document.addEventListener('DOMContentLoaded', function () {
     // エラーを非表示にする関数
     function hideError() {
         errorArea.style.display = 'none';
-        errorArea.textContent = '';
     }
 });

@@ -1,12 +1,12 @@
-﻿@page
+@page
 @model IndexModel
 @{
-    ViewData["Title"] = "OCR Text Extractor";
+    ViewData["Title"] = "GPT-4o Vision Text Extractor";
 }
 
 <style>
     body {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         min-height: 100vh;
     }
 </style>
@@ -20,7 +20,19 @@
         <div class="col-md-10">
             <div class="card shadow">
                 <div class="card-body p-4">
-                    <h1 class="card-title text-center mb-4">Azure Document Intelligence - OCR</h1>
+                    <h1 class="card-title text-center mb-4">Azure OpenAI GPT-4o - Vision OCR</h1>
+
+                    <!-- カスタムプロンプト入力エリア -->
+                    <div class="mb-4">
+                        <label for="customPrompt" class="form-label">カスタムプロンプト（オプション）</label>
+                        <textarea class="form-control" 
+                                  id="customPrompt" 
+                                  rows="3" 
+                                  placeholder="例: この画像から表の内容をMarkdown形式で抽出してください"></textarea>
+                        <small class="form-text text-muted">
+                            空欄の場合、デフォルトプロンプトを使用します
+                        </small>
+                    </div>
 
                     <!-- ファイルアップロードエリア -->
                     <div class="mb-4">
@@ -39,7 +51,7 @@
                             <input type="file" 
                                    class="d-none" 
                                    id="imageFile" 
-                                   accept=".jpg,.jpeg,.png,.pdf,.tiff,.tif,.bmp">
+                                   accept=".jpg,.jpeg,.png,.gif,.webp">
                         </div>
 
                         <div class="d-grid">
@@ -76,7 +88,7 @@
                                         <div class="spinner-border text-primary mb-2" role="status">
                                             <span class="visually-hidden">処理中...</span>
                                         </div>
-                                        <p class="text-muted mb-0">画像を解析しています...</p>
+                                        <p class="text-muted mb-0">GPT-4o で画像を解析しています...</p>
                                     </div>
                                     
                                     <!-- 抽出されたテキスト -->
@@ -91,9 +103,9 @@
                         <!-- 詳細情報 -->
                         <div class="mt-3" id="detailsArea" style="display: none;">
                             <small class="text-muted">
-                                ページ数: <span id="pageCount"></span> | 
-                                行数: <span id="lineCount"></span> | 
-                                平均信頼度: <span id="confidence"></span>
+                                処理方法: <span id="method"></span> | 
+                                文字数: <span id="charCount"></span> | 
+                                処理日時: <span id="processedAt"></span>
                             </small>
                         </div>
                     </div>
@@ -104,5 +116,5 @@
 </div>
 
 @section Scripts {
-    <script src="~/js/ocr-app.js"></script>
+    <script src="~/js/gpt-vision.js"></script>
 }
