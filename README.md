@@ -51,33 +51,61 @@ Read-Text-in-Images-with-Azure-AI/
 │   └── WebApp/
 │       ├── Pages/
 │       │   ├── Index.cshtml              # ホーム画面
+│       │   ├── Index.cshtml.cs
+│       │   ├── Error.cshtml              # エラーページ
+│       │   ├── Error.cshtml.cs
 │       │   ├── OCR/
 │       │   │   ├── Index.cshtml          # Document Intelligence 画面
 │       │   │   └── Index.cshtml.cs
 │       │   ├── GPT/
 │       │   │   ├── Index.cshtml          # GPT-4o Vision 画面
 │       │   │   └── Index.cshtml.cs
-│       │   └── Shared/
-│       │       └── _Layout.cshtml        # 共通レイアウト
+│       │   ├── Shared/
+│       │   │   ├── _Layout.cshtml        # 共通レイアウト
+│       │   │   ├── _Layout.cshtml.css
+│       │   │   └── _ValidationScriptsPartial.cshtml
+│       │   ├── _ViewImports.cshtml
+│       │   └── _ViewStart.cshtml
 │       ├── Services/
 │       │   ├── IOcrService.cs
 │       │   ├── DocumentIntelligenceService.cs   # Document Intelligence 実装
 │       │   ├── IGptVisionService.cs
-│       │   └── OpenAIVisionService.cs           # GPT-4o Vision 実装
+│       │   ├── OpenAIVisionService.cs           # GPT-4o Vision 実装
+│       │   └── HealthChecks/
+│       │       ├── DocumentIntelligenceHealthCheck.cs  # ヘルスチェック
+│       │       └── AzureOpenAIHealthCheck.cs           # ヘルスチェック
 │       ├── Models/
 │       │   ├── OcrResult.cs              # Document Intelligence 結果
-│       │   └── VisionOcrResult.cs        # GPT-4o Vision 結果
-│       └── wwwroot/
-│           ├── css/
-│           │   └── site.css              # カスタムスタイル
-│           └── js/
-│               ├── ocr-app.js            # Document Intelligence UI
-│               └── gpt-vision.js         # GPT-4o Vision UI
+│       │   ├── VisionOcrResult.cs        # GPT-4o Vision 結果
+│       │   ├── OcrError.cs
+│       │   └── FileUploadOptions.cs
+│       ├── wwwroot/
+│       │   ├── css/
+│       │   │   └── site.css              # カスタムスタイル
+│       │   ├── js/
+│       │   │   ├── ocr-app.js            # Document Intelligence UI
+│       │   │   ├── gpt-vision.js         # GPT-4o Vision UI
+│       │   │   └── site.js
+│       │   └── lib/
+│       │       ├── bootstrap/
+│       │       ├── jquery/
+│       │       └── jquery-validation/
+│       ├── Properties/
+│       │   └── launchSettings.json
+│       ├── Program.cs
+│       ├── appsettings.json
+│       ├── appsettings.Development.json
+│       └── WebApp.csproj
 ├── references/
 │   ├── plan.md                           # 実装計画 (Phase 1-10)
 │   ├── plan_add-on-1.md                  # 追加機能計画 (GPT-4o)
+│   ├── plan_add-on-2.md                  # 追加機能計画 (OpenTelemetry)
 │   ├── architecture.md                   # アーキテクチャ設計
-│   └── features.md                       # 機能一覧
+│   ├── features.md                       # 機能一覧
+│   ├── implementation-plan.md            # 実装計画
+│   ├── image1.png                        # UIモック (アップロード前)
+│   └── image2.png                        # UIモック (アップロード後)
+├── AzureAISample.sln
 └── README.md
 ```
 
@@ -106,8 +134,71 @@ dotnet run
 
 ブラウザで `http://localhost:5269` にアクセス
 
+## 可観測性とヘルスチェック
+
+### OpenTelemetry 統合
+アプリケーションは OpenTelemetry を使用して、トレーシングとメトリクスを Application Insights に送信します。
+
+- **トレーシング**: HTTP リクエスト、Azure API 呼び出しなどの分散トレース
+- **メトリクス**: カスタムメトリクス（ヘルスチェック、OCR、GPT Vision）
+- **ログ**: 構造化ログの出力
+
+### ヘルスチェックエンドポイント
+
+#### `/health`
+すべてのヘルスチェックの詳細情報を JSON 形式で返します。
+```bash
+curl http://localhost:5269/health
+```
+
+レスポンス例:
+```json
+{
+  "status": "Healthy",
+  "checks": [
+    {
+      "name": "document_intelligence",
+      "status": "Healthy",
+      "description": "Document Intelligence endpoint is reachable",
+      "duration": "00:00:00.234"
+    },
+    {
+      "name": "azure_openai",
+      "status": "Healthy",
+      "description": "Azure OpenAI endpoint is reachable",
+      "duration": "00:00:00.189"
+    }
+  ],
+  "totalDuration": "00:00:00.423"
+}
+```
+
+#### `/health/ready`
+Readiness プローブ。外部依存関係のチェック結果を返します（Kubernetes/Container Apps 用）。
+```bash
+curl http://localhost:5269/health/ready
+```
+
+#### `/health/live`
+Liveness プローブ。アプリケーションが起動していることを確認します（外部依存関係はチェックしません）。
+```bash
+curl http://localhost:5269/health/live
+```
+
+### Application Insights の設定
+
+Application Insights に接続する場合、`appsettings.Development.json` に接続文字列を設定します:
+```json
+{
+  "ApplicationInsights": {
+    "ConnectionString": "InstrumentationKey=your-key;IngestionEndpoint=https://..."
+  }
+}
+```
+
 ## 主な実装機能
 
+### OCR 機能
 - ✅ ドラッグ&ドロップによるファイルアップロード
 - ✅ 画像プレビュー表示
 - ✅ リアルタイム処理進捗表示
@@ -115,6 +206,13 @@ dotnet run
 - ✅ カスタムプロンプト対応 (GPT-4o Vision)
 - ✅ Azure API エラーハンドリング (429, 401/403 対応)
 - ✅ レスポンシブデザイン
+
+### 可観測性とヘルスチェック
+- ✅ OpenTelemetry による分散トレーシングとメトリクス
+- ✅ Application Insights 統合
+- ✅ ヘルスチェックエンドポイント (`/health`, `/health/ready`, `/health/live`)
+- ✅ カスタムメトリクスによるヘルスチェック状態の記録
+- ✅ Azure Container Apps/AKS の Readiness/Liveness プローブ対応
 
 ## ライセンス
 

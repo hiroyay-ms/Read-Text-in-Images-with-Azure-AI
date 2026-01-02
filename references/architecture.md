@@ -17,37 +17,65 @@
 ```
 Read-Text-in-Images-with-Azure-AI/
 ├── src/
-│   ├── WebApp/                    # ASP.NET Core Web App (Razor Pages)
-│   │   ├── Pages/                 # Razor Pages
-│   │   │   ├── Index.cshtml       # メインUIページ
-│   │   │   ├── Index.cshtml.cs    # PageModel
-│   │   │   ├── Shared/            # 共有レイアウト
-│   │   │   │   ├── _Layout.cshtml
-│   │   │   │   └── _ValidationScriptsPartial.cshtml
-│   │   │   └── _ViewImports.cshtml
-│   │   ├── Services/              # ビジネスロジック層
-│   │   │   ├── IOcrService.cs
-│   │   │   └── DocumentIntelligenceService.cs
-│   │   ├── Models/                # データモデル、DTOs
-│   │   │   ├── OcrResult.cs
-│   │   │   ├── ImageUploadRequest.cs
-│   │   │   └── OcrError.cs
-│   │   ├── wwwroot/              # 静的ファイル
-│   │   │   ├── js/
-│   │   │   │   └── ocr-app.js    # OCR機能のJavaScript
-│   │   │   ├── css/
-│   │   │   │   └── site.css
-│   │   │   └── lib/              # クライアントライブラリ
-│   │   ├── Program.cs
-│   │   └── appsettings.json
-│   └── WebApp.Tests/             # 単体テスト
-├── docker/
-│   └── Dockerfile
-├── docker-compose.yml
+│   └── WebApp/                    # ASP.NET Core Web App (Razor Pages)
+│       ├── Pages/                 # Razor Pages
+│       │   ├── Index.cshtml       # ホーム画面
+│       │   ├── Index.cshtml.cs
+│       │   ├── Error.cshtml       # エラーページ
+│       │   ├── Error.cshtml.cs
+│       │   ├── OCR/               # Document Intelligence 画面
+│       │   │   ├── Index.cshtml
+│       │   │   └── Index.cshtml.cs
+│       │   ├── GPT/               # GPT-4o Vision 画面
+│       │   │   ├── Index.cshtml
+│       │   │   └── Index.cshtml.cs
+│       │   ├── Shared/            # 共有レイアウト
+│       │   │   ├── _Layout.cshtml
+│       │   │   ├── _Layout.cshtml.css
+│       │   │   └── _ValidationScriptsPartial.cshtml
+│       │   ├── _ViewImports.cshtml
+│       │   └── _ViewStart.cshtml
+│       ├── Services/              # ビジネスロジック層
+│       │   ├── IOcrService.cs
+│       │   ├── DocumentIntelligenceService.cs
+│       │   ├── IGptVisionService.cs
+│       │   ├── OpenAIVisionService.cs
+│       │   └── HealthChecks/      # ヘルスチェック実装
+│       │       ├── DocumentIntelligenceHealthCheck.cs
+│       │       └── AzureOpenAIHealthCheck.cs
+│       ├── Models/                # データモデル、DTOs
+│       │   ├── OcrResult.cs       # Document Intelligence 結果
+│       │   ├── VisionOcrResult.cs # GPT-4o Vision 結果
+│       │   ├── OcrError.cs
+│       │   └── FileUploadOptions.cs
+│       ├── wwwroot/               # 静的ファイル
+│       │   ├── js/
+│       │   │   ├── ocr-app.js     # Document Intelligence UI
+│       │   │   ├── gpt-vision.js  # GPT-4o Vision UI
+│       │   │   └── site.js
+│       │   ├── css/
+│       │   │   └── site.css
+│       │   └── lib/               # クライアントライブラリ
+│       │       ├── bootstrap/
+│       │       ├── jquery/
+│       │       └── jquery-validation/
+│       ├── Properties/
+│       │   └── launchSettings.json
+│       ├── Program.cs
+│       ├── appsettings.json
+│       ├── appsettings.Development.json
+│       └── WebApp.csproj
+├── AzureAISample.sln
 ├── README.md
 └── references/
-    ├── architecture.md           # このファイル
-    └── image.png                 # UIモック
+    ├── architecture.md            # このファイル
+    ├── features.md                # 機能一覧
+    ├── implementation-plan.md     # 実装計画
+    ├── plan.md                    # 段階的実装計画
+    ├── plan_add-on-1.md           # 追加機能1 (GPT-4o)
+    ├── plan_add-on-2.md           # 追加機能2 (OpenTelemetry)
+    ├── image1.png                 # UIモック (アップロード前)
+    └── image2.png                 # UIモック (アップロード後)
 ```
 
 ---
@@ -643,11 +671,19 @@ public class IndexModelTests
 
 ### NuGet パッケージ
 ```xml
+<!-- Azure AI サービス -->
 <PackageReference Include="Azure.AI.FormRecognizer" Version="4.1.0" />
-<PackageReference Include="Azure.Identity" Version="1.10.0" />
-<PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
-<PackageReference Include="Serilog.Sinks.Console" Version="5.0.0" />
-<PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+<PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
+<PackageReference Include="Azure.Identity" Version="1.13.1" />
+
+<!-- OpenTelemetry -->
+<PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
+<PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.9.0" />
+<PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.9.0" />
+<PackageReference Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.2.0" />
+
+<!-- ヘルスチェック -->
+<PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="8.0.1" />
 ```
 
 ### クライアントサイドライブラリ
@@ -674,6 +710,133 @@ public class IndexModelTests
 2. **シンプルな構造**: 複雑なナビゲーションが不要
 3. **保守性**: 関連コードが1箇所にまとまり理解しやすい
 4. **開発速度**: ファイルベースルーティングで迅速な実装が可能
+
+---
+
+## 可観測性とヘルスチェック
+
+### OpenTelemetry 統合
+
+#### 設定 (Program.cs)
+```csharp
+// OpenTelemetry の設定
+var connectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
+
+var otelBuilder = builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource
+        .AddService(serviceName: "WebApp", serviceVersion: "1.0.0"))
+    .WithTracing(tracing =>
+    {
+        tracing
+            .AddAspNetCoreInstrumentation(options =>
+            {
+                // ヘルスチェックエンドポイントは除外
+                options.Filter = context => 
+                    !context.Request.Path.StartsWithSegments("/health");
+            })
+            .AddHttpClientInstrumentation();
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddMeter("WebApp.HealthChecks")
+            .AddMeter("WebApp.OCR")
+            .AddMeter("WebApp.GPTVision");
+    });
+
+// Application Insights への送信
+if (!string.IsNullOrEmpty(connectionString))
+{
+    otelBuilder.UseAzureMonitor(options =>
+    {
+        options.ConnectionString = connectionString;
+    });
+}
+```
+
+#### カスタムメトリクス
+- **ヘルスチェック**: `health_check.executions`, `health_check.duration`
+- **OCR**: `ocr.requests`, `ocr.errors`, `ocr.duration`, `ocr.text_lines` (Phase 4 で実装予定)
+- **GPT Vision**: `gpt_vision.requests`, `gpt_vision.errors`, `gpt_vision.duration`, `gpt_vision.tokens` (Phase 4 で実装予定)
+
+### ヘルスチェックエンドポイント
+
+#### エンドポイント一覧
+- **`/health`**: すべてのヘルスチェックの詳細情報 (JSON)
+- **`/health/ready`**: Readiness プローブ (Kubernetes/Container Apps)
+- **`/health/live`**: Liveness プローブ (外部依存関係なし)
+
+#### ヘルスチェック実装
+
+##### DocumentIntelligenceHealthCheck
+```csharp
+public class DocumentIntelligenceHealthCheck : IHealthCheck
+{
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<DocumentIntelligenceHealthCheck> _logger;
+    private static readonly HttpClient _httpClient = new();
+
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, 
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var endpoint = _configuration["DocumentIntelligence_Endpoint"];
+            // HTTP HEAD リクエストでエンドポイントへの接続確認 (2秒タイムアウト)
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var response = await _httpClient.SendAsync(
+                new HttpRequestMessage(HttpMethod.Head, endpoint), cts.Token);
+            
+            return HealthCheckResult.Healthy("Document Intelligence endpoint is reachable");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Document Intelligence health check failed");
+            return HealthCheckResult.Unhealthy("Cannot reach Document Intelligence endpoint", ex);
+        }
+    }
+}
+```
+
+##### AzureOpenAIHealthCheck
+```csharp
+public class AzureOpenAIHealthCheck : IHealthCheck
+{
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<AzureOpenAIHealthCheck> _logger;
+    private static readonly HttpClient _httpClient = new();
+
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, 
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var endpoint = _configuration["AzureOpenAI:Endpoint"];
+            // HTTP HEAD リクエストでエンドポイントへの接続確認 (2秒タイムアウト)
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var response = await _httpClient.SendAsync(
+                new HttpRequestMessage(HttpMethod.Head, endpoint), cts.Token);
+            
+            return HealthCheckResult.Healthy("Azure OpenAI endpoint is reachable");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Azure OpenAI health check failed");
+            return HealthCheckResult.Unhealthy("Cannot reach Azure OpenAI endpoint", ex);
+        }
+    }
+}
+```
+
+#### ヘルスチェックの特徴
+- **軽量**: HTTP HEAD リクエストのみ (認証なし、API 呼び出しなし)
+- **高速**: sub-second レスポンス (2秒タイムアウト)
+- **メトリクス**: エンドポイント呼び出し時にカスタムメトリクスを記録
+- **Azure 対応**: Container Apps/AKS の Readiness/Liveness プローブに最適化
 
 ---
 
