@@ -4,10 +4,6 @@ name: Deploy Web App
 on:
   workflow_dispatch:
     inputs:
-      resourceGroup:
-        description: 'The name of the Resource Group'
-        required: true
-        default: 'my-resource-group'
       webAppName:
         description: 'The name of the Web App'
         required: true
@@ -34,7 +30,6 @@ jobs:
         uses: actions/setup-dotnet@v3
         with:
           dotnet-version: '10.0.x'
-          include-prerelease: true
       
       - name: Build with dotnet
         run: |
@@ -75,7 +70,6 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v2
         with:
-          resource-group: ${{ github.event.inputs.resourceGroup }}
           app-name: ${{ github.event.inputs.webAppName }}
           slot-name: 'Production'
           package: .
@@ -119,7 +113,6 @@ jobs:
           echo "" >> $env:GITHUB_STEP_SUMMARY
           echo "| Item | Value |" >> $env:GITHUB_STEP_SUMMARY
           echo "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
-          echo "| Resource Group | ``${{ github.event.inputs.resourceGroup }}`` |" >> $env:GITHUB_STEP_SUMMARY
           echo "| Web App Name | ``${{ github.event.inputs.webAppName }}`` |" >> $env:GITHUB_STEP_SUMMARY
           echo "| Deployment Time | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC') |" >> $env:GITHUB_STEP_SUMMARY
           echo "| Workflow Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $env:GITHUB_STEP_SUMMARY
