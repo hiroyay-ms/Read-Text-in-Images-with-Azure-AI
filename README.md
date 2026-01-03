@@ -118,13 +118,39 @@ Read-Text-in-Images-with-Azure-AI/
 - Azure OpenAI Service リソース (GPT-4o モデルデプロイ済み)
 
 ### 環境変数の設定
+
+#### 必須環境変数
+
+App Service のアプリケーション設定に以下の環境変数を設定してください：
+
 ```bash
-# Document Intelligence
-AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
-# GPT-4o Vision
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+# Document Intelligence エンドポイント
+DocumentIntelligence_Endpoint=https://your-resource.cognitiveservices.azure.com/
+
+# Azure OpenAI エンドポイント
+AzureOpenAI__Endpoint=https://your-resource.openai.azure.com/
+
+# Azure OpenAI デプロイメント名
+AzureOpenAI__DeploymentName=gpt-4o
+
+# Application Insights 接続文字列（可観測性を有効にする場合）
+ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
 ```
+
+#### オプション環境変数
+
+```bash
+# ファイルアップロードの最大サイズ（MB、デフォルト: 10）
+FileUpload__MaxFileSizeMB=10
+
+# ヘルスチェックのタイムアウト（秒、デフォルト: 10）
+HealthChecks__TimeoutSeconds=10
+
+# ヘルスチェックの詳細エラー表示（デフォルト: true）
+HealthChecks__EnableDetailedErrors=true
+```
+
+> **注意**: Azure App Service では、環境変数名の `:` を `__` (アンダースコア2つ) に置き換えてください。
 
 ### 実行方法
 ```bash
