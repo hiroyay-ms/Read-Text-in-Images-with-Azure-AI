@@ -1,1 +1,140 @@
 
+name: Deploy Web App
+
+on:
+  workflow_dispatch:
+    inputs:
+      resourceGroup:
+        description: 'The name of the Resource Group'
+        required: true
+        default: 'my-resource-group'
+      webAppName:
+        description: 'The name of the Web App'
+        required: true
+        default: 'my-web-app'
+      webAppUrl:
+        description: 'The URL of the Web App without https:// (e.g., my-web-app.azurewebsites.net)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      APP_PATH: './src/WebApp'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '10.0.x'
+          include-prerelease: true
+      
+      - name: Build with dotnet
+        run: |
+          echo "::group::Building application"
+          dotnet build ${{ env.APP_PATH }} --configuration Release --verbosity normal
+          echo "::endgroup::"
+      
+      - name: Publish with dotnet
+        run: |
+          echo "::group::Publishing application"
+          dotnet publish ${{ env.APP_PATH }} --configuration Release --output ${{ env.APP_PATH }}/publish --verbosity normal
+          echo "::endgroup::"
+      
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v3
+        with:
+          name: webapp
+          path: ${{ env.APP_PATH }}/publish
+  
+  deploy:
+    runs-on: windows-latest
+    needs: build
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v3
+        with:
+          name: webapp
+      
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Deploy to Azure Web App
+        id: deploy-to-webapp
+        uses: azure/webapps-deploy@v2
+        with:
+          resource-group: ${{ github.event.inputs.resourceGroup }}
+          app-name: ${{ github.event.inputs.webAppName }}
+          slot-name: 'Production'
+          package: .
+      
+      - name: Verify deployment
+        if: success()
+        run: |
+          echo "::group::Deployment verification"
+          $webAppUrl = "https://${{ github.event.inputs.webAppUrl }}"
+          echo "Web App URL: $webAppUrl"
+          echo "Waiting 30 seconds for app to start..."
+          Start-Sleep -Seconds 30
+          
+          try {
+            $response = Invoke-WebRequest -Uri "$webAppUrl/health" -TimeoutSec 30 -UseBasicParsing
+            if ($response.StatusCode -eq 200) {
+              echo "✅ Health check passed - Status: $($response.StatusCode)"
+              echo "deployment-status=success" >> $env:GITHUB_OUTPUT
+            } else {
+              echo "⚠️ Health check returned unexpected status: $($response.StatusCode)"
+              echo "deployment-status=warning" >> $env:GITHUB_OUTPUT
+            }
+          } catch {
+            echo "⚠️ Health check failed: $($_.Exception.Message)"
+            echo "Trying root URL instead..."
+            try {
+              $rootResponse = Invoke-WebRequest -Uri $webAppUrl -TimeoutSec 30 -UseBasicParsing
+              echo "✅ Root URL accessible - Status: $($rootResponse.StatusCode)"
+              echo "deployment-status=success" >> $env:GITHUB_OUTPUT
+            } catch {
+              echo "❌ Root URL also failed: $($_.Exception.Message)"
+              echo "deployment-status=failed" >> $env:GITHUB_OUTPUT
+            }
+          }
+          echo "::endgroup::"
+      
+      - name: Generate deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Resource Group | ``${{ github.event.inputs.resourceGroup }}`` |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Web App Name | ``${{ github.event.inputs.webAppName }}`` |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Deployment Time | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC') |" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Workflow Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          
+          if ("${{ job.status }}" -eq "success") {
+            echo "### ✅ Deployment Status: Success" >> $env:GITHUB_STEP_SUMMARY
+            echo "" >> $env:GITHUB_STEP_SUMMARY
+            echo "🌐 **Web App URL**: https://${{ github.event.inputs.webAppUrl }}" >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            echo "### ❌ Deployment Status: Failed" >> $env:GITHUB_STEP_SUMMARY
+            echo "" >> $env:GITHUB_STEP_SUMMARY
+            echo "Please check the logs above for error details." >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Logout
+        if: always()
+        run: az logout
