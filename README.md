@@ -132,10 +132,9 @@ AzureOpenAI__Endpoint=https://your-resource.openai.azure.com/
 
 # Azure OpenAI デプロイメント名
 AzureOpenAI__DeploymentName=gpt-4o
-
-# Application Insights 接続文字列（可観測性を有効にする場合）
-ApplicationInsights__ConnectionString=InstrumentationKey=...;IngestionEndpoint=https://...
 ```
+
+> **注意**: Application Insights の接続文字列（`APPLICATIONINSIGHTS_CONNECTION_STRING`）は、App Service で Application Insights を有効にすると自動的に設定されます。手動設定は不要です。
 
 #### オプション環境変数
 
@@ -213,14 +212,16 @@ curl http://localhost:5269/health/live
 
 ### Application Insights の設定
 
-Application Insights に接続する場合、`appsettings.Development.json` に接続文字列を設定します:
-```json
-{
-  "ApplicationInsights": {
-    "ConnectionString": "InstrumentationKey=your-key;IngestionEndpoint=https://..."
-  }
-}
+Application Insights に接続する場合、環境変数 `APPLICATIONINSIGHTS_CONNECTION_STRING` を設定します：
+
+```bash
+# ローカル開発環境（appsettings.Development.json）
+APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpoint=https://...
+
+# App Service では自動的に設定されるため、手動設定は不要
 ```
+
+> **注意**: Azure App Service で Application Insights を有効にすると、`APPLICATIONINSIGHTS_CONNECTION_STRING` 環境変数が自動的に設定されます。
 
 ## 主な実装機能
 

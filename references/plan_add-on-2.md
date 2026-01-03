@@ -69,8 +69,7 @@ dotnet add package OpenTelemetry.Exporter.Console --version 1.9.0
 - `Logging:LogLevel` に以下を追加:
   - `Azure.Core`: Warning
   - `OpenTelemetry`: Information
-- `ApplicationInsights` セクション:
-  - `ConnectionString`: ""（空文字列）
+- `APPLICATIONINSIGHTS_CONNECTION_STRING`: ""（空文字列、またはローカルの Application Insights 接続文字列）
 - `HealthChecks` セクション:
   - `TimeoutSeconds`: 10
   - `EnableDetailedErrors`: true
@@ -220,7 +219,7 @@ OpenTelemetry の基本的なトレーシングとメトリクスを設定し、
   - OpenTelemetry.Trace
   - System.Diagnostics.Metrics
 - [x] builder 作成直後に OpenTelemetry の設定を追加:
-  - ApplicationInsights の ConnectionString を設定から取得
+  - APPLICATIONINSIGHTS_CONNECTION_STRING 環境変数から接続文字列を取得（App Service では自動設定）
   - AddOpenTelemetry() を呼び出す
   - ConfigureResource でサービス名とバージョンを設定
   - WithTracing でトレーシングを設定:
@@ -543,8 +542,8 @@ OpenTelemetry の基本的なトレーシングとメトリクスを設定し、
 - [ ] 接続文字列をコピー
 
 #### 2. アプリケーション設定の更新
-- [ ] Azure App Service または Container Apps の設定で環境変数を追加:
-  - `ApplicationInsights__ConnectionString`: Application Insights の接続文字列
+- [ ] Azure App Service で Application Insights を有効化すると、`APPLICATIONINSIGHTS_CONNECTION_STRING` 環境変数が自動的に設定されます
+- [ ] Container Apps の場合は、環境変数 `APPLICATIONINSIGHTS_CONNECTION_STRING` に Application Insights の接続文字列を手動で設定
 
 #### 3. ヘルスプローブの設定
 - [ ] Azure Container Apps の場合:
