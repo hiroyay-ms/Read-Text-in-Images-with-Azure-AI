@@ -14,7 +14,8 @@ using WebApp.Services.HealthChecks;
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenTelemetry の設定
-var connectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
+// App Service で自動設定される APPLICATIONINSIGHTS_CONNECTION_STRING 環境変数を使用
+var connectionString = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
 
 var otelBuilder = builder.Services.AddOpenTelemetry()
     .ConfigureResource(resource => resource
