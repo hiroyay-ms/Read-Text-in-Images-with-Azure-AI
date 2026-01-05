@@ -129,9 +129,11 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-//app.UseHttpsRedirection();
-app.UseWhen(
-    context => !WarmupController.IsWarmupRequest(context.Request.Path),
+// app.UseWhen(
+//    context => !WarmupController.IsWarmupRequest(context.Request.Path),
+//    mainApp => mainApp.UseHttpsRedirection()
+// );
+app.UseWhen(context => !context.Request.Path.StartsWithSegments("/warmup"),
     mainApp => mainApp.UseHttpsRedirection()
 );
 
