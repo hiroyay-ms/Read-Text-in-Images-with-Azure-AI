@@ -192,6 +192,73 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
     }
 });
 
+// Warmup エンドポイント
+app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
+{
+    var warmupLogger = sp.GetRequiredService<ILogger<Program>>();
+    warmupLogger.LogInformation("Warmup エンドポイントが呼び出されました");
+    
+    try
+    {
+        // Document Intelligence の接続確認
+        var docClient = sp.GetRequiredService<DocumentAnalysisClient>();
+        var docEndpoint = config["DocumentIntelligence_Endpoint"];
+        
+        if (string.IsNullOrEmpty(docEndpoint))
+        {
+            warmupLogger.LogError("Document Intelligence エンドポイントが設定されていません");
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        
+        using var httpClient = new HttpClient();
+        httpClient.Timeout = TimeSpan.FromSeconds(5);
+        
+        var docRequest = new HttpRequestMessage(HttpMethod.Head, docEndpoint);
+        var docResponse = await httpClient.SendAsync(docRequest);
+        warmupLogger.LogInformation("Document Intelligence 接続確認成功 (Status: {StatusCode})", docResponse.StatusCode);
+        
+        // OCR サービスの初期化確認
+        var ocrService = sp.GetRequiredService<IOcrService>();
+        warmupLogger.LogInformation("OCR サービスの初期化成功");
+        
+        // Azure OpenAI の接続確認
+        var openAIEndpoint = config["AzureOpenAI:Endpoint"];
+        var deploymentName = config["AzureOpenAI:DeploymentName"];
+        
+        if (!string.IsNullOrEmpty(openAIEndpoint) && !string.IsNullOrEmpty(deploymentName))
+        {
+            var gptService = sp.GetRequiredService<IGptVisionService>();
+            
+            var openAIRequest = new HttpRequestMessage(HttpMethod.Head, openAIEndpoint);
+            var openAIResponse = await httpClient.SendAsync(openAIRequest);
+            warmupLogger.LogInformation("Azure OpenAI 接続確認成功 (Status: {StatusCode})", openAIResponse.StatusCode);
+            warmupLogger.LogInformation("GPT Vision サービスの初期化成功");
+        }
+        else
+        {
+            warmupLogger.LogWarning("Azure OpenAI の設定が不完全です（Endpoint または DeploymentName が未設定）");
+        }
+        
+        warmupLogger.LogInformation("Warmup 完了: すべてのサービスが正常に初期化されました");
+        return Results.Ok(new { status = "ready", message = "Application warmed up successfully" });
+    }
+    catch (InvalidOperationException ex)
+    {
+        warmupLogger.LogError(ex, "Warmup エラー: 設定が不足しています");
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (HttpRequestException ex)
+    {
+        warmupLogger.LogError(ex, "Warmup エラー: サービスへの接続に失敗しました");
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (Exception ex)
+    {
+        warmupLogger.LogError(ex, "Warmup エラー: サービスの初期化に失敗しました");
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
 app.MapStaticAssets();
 app.MapRazorPages()
    .WithStaticAssets();
