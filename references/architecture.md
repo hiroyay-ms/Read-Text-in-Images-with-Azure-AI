@@ -766,7 +766,8 @@ if (!string.IsNullOrEmpty(connectionString))
 #### エンドポイント一覧
 - **`/health`**: すべてのヘルスチェックの詳細情報 (JSON)
 - **`/health/ready`**: Readiness プローブ (Kubernetes/Container Apps)
-- **`/health/live`**: Liveness プローブ (外部依存関係なし)- **`/warmup`**: Warmup エンドポイント (アプリケーション起動時のサービス初期化確認)
+- **`/health/live`**: Liveness プローブ (外部依存関係なし)
+- **`/warmup`**: Warmup エンドポイント (アプリケーション起動時のサービス初期化確認)
 #### ヘルスチェック実装
 
 ##### DocumentIntelligenceHealthCheck
@@ -893,21 +894,11 @@ app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
 - **エラーハンドリング**: 接続エラー時は HTTP 503 (Service Unavailable) を返却
 - **詳細ログ**: 各サービスの初期化状況とエラーをログに記録
 
-#### WarmupController クラス
-```csharp
-public static class WarmupController
-{
-    public static bool IsWarmupRequest(PathString path)
-    {
-        return path.StartsWithSegments("/warmup");
-    }
-}
-```
-
 #### HTTPSリダイレクトの制御
 ```csharp
-app.UseWhen(
-    context => !WarmupController.IsWarmupRequest(context.Request.Path),
+// Warmup エンドポイント以外のリクエストに対してのみ HTTPS リダイレクトを適用
+// App Service の Warmup 機能は HTTP でリクエストするため、リダイレクトを除外
+app.UseWhen(context => !context.Request.Path.StartsWithSegments("/warmup"),
     mainApp => mainApp.UseHttpsRedirection()
 );
 ```
