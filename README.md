@@ -170,6 +170,26 @@ dotnet run
 
 ### ヘルスチェックエンドポイント
 
+#### `/warmup`
+アプリケーション起動時にすべての依存サービスの初期化と接続確認を行います。App Service の warmup トリガーで使用されます。
+```bash
+curl http://localhost:5269/warmup
+```
+
+レスポンス例:
+```json
+{
+  "status": "ready",
+  "message": "Application warmed up successfully"
+}
+```
+
+**特徴:**
+- HTTP アクセス可能（HTTPSリダイレクトなし）
+- すべてのサービスの初期化を確認
+- Azure サービスへの実際の接続確認（HTTP HEAD リクエスト）
+- エラー時は HTTP 503 (Service Unavailable) を返却
+
 #### `/health`
 すべてのヘルスチェックの詳細情報を JSON 形式で返します。
 ```bash
@@ -238,6 +258,7 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 - ✅ OpenTelemetry による分散トレーシングとメトリクス
 - ✅ Application Insights 統合
 - ✅ ヘルスチェックエンドポイント (`/health`, `/health/ready`, `/health/live`)
+- ✅ Warmup エンドポイント (`/warmup`) - App Service の起動時初期化
 - ✅ カスタムメトリクスによるヘルスチェック状態の記録
 - ✅ Azure Container Apps/AKS の Readiness/Liveness プローブ対応
 

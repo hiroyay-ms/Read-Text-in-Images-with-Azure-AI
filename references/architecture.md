@@ -766,8 +766,7 @@ if (!string.IsNullOrEmpty(connectionString))
 #### エンドポイント一覧
 - **`/health`**: すべてのヘルスチェックの詳細情報 (JSON)
 - **`/health/ready`**: Readiness プローブ (Kubernetes/Container Apps)
-- **`/health/live`**: Liveness プローブ (外部依存関係なし)
-
+- **`/health/live`**: Liveness プローブ (外部依存関係なし)- **`/warmup`**: Warmup エンドポイント (アプリケーション起動時のサービス初期化確認)
 #### ヘルスチェック実装
 
 ##### DocumentIntelligenceHealthCheck
@@ -837,6 +836,83 @@ public class AzureOpenAIHealthCheck : IHealthCheck
 - **高速**: sub-second レスポンス (2秒タイムアウト)
 - **メトリクス**: エンドポイント呼び出し時にカスタムメトリクスを記録
 - **Azure 対応**: Container Apps/AKS の Readiness/Liveness プローブに最適化
+
+### Warmup エンドポイント
+
+#### `/warmup` エンドポイント
+アプリケーション起動時にすべての依存サービスの初期化と接続確認を行います。
+
+```csharp
+app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
+{
+    var warmupLogger = sp.GetRequiredService<ILogger<Program>>();
+    warmupLogger.LogInformation("Warmup エンドポイントが呼び出されました");
+    
+    try
+    {
+        // Document Intelligence の接続確認
+        var docClient = sp.GetRequiredService<DocumentAnalysisClient>();
+        var docEndpoint = config["DocumentIntelligence_Endpoint"];
+        
+        using var httpClient = new HttpClient();
+        httpClient.Timeout = TimeSpan.FromSeconds(5);
+        
+        var docRequest = new HttpRequestMessage(HttpMethod.Head, docEndpoint);
+        var docResponse = await httpClient.SendAsync(docRequest);
+        warmupLogger.LogInformation("Document Intelligence 接続確認成功");
+        
+        // OCR サービスの初期化確認
+        var ocrService = sp.GetRequiredService<IOcrService>();
+        
+        // Azure OpenAI の接続確認
+        var openAIEndpoint = config["AzureOpenAI:Endpoint"];
+        var deploymentName = config["AzureOpenAI:DeploymentName"];
+        
+        if (!string.IsNullOrEmpty(openAIEndpoint) && !string.IsNullOrEmpty(deploymentName))
+        {
+            var gptService = sp.GetRequiredService<IGptVisionService>();
+            var openAIRequest = new HttpRequestMessage(HttpMethod.Head, openAIEndpoint);
+            var openAIResponse = await httpClient.SendAsync(openAIRequest);
+            warmupLogger.LogInformation("Azure OpenAI 接続確認成功");
+        }
+        
+        return Results.Ok(new { status = "ready", message = "Application warmed up successfully" });
+    }
+    catch (Exception ex)
+    {
+        warmupLogger.LogError(ex, "Warmup エラー");
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+});
+```
+
+#### Warmup エンドポイントの特徴
+- **HTTP アクセス可能**: HTTPSリダイレクトをスキップ（App Service の warmup トリガーに対応）
+- **サービス初期化**: すべての依存サービス（DI コンテナ）の初期化を確認
+- **接続確認**: Azure サービスへの実際の接続を確認（HTTP HEAD リクエスト、5秒タイムアウト）
+- **エラーハンドリング**: 接続エラー時は HTTP 503 (Service Unavailable) を返却
+- **詳細ログ**: 各サービスの初期化状況とエラーをログに記録
+
+#### WarmupController クラス
+```csharp
+public static class WarmupController
+{
+    public static bool IsWarmupRequest(PathString path)
+    {
+        return path.StartsWithSegments("/warmup");
+    }
+}
+```
+
+#### HTTPSリダイレクトの制御
+```csharp
+app.UseWhen(
+    context => !WarmupController.IsWarmupRequest(context.Request.Path),
+    mainApp => mainApp.UseHttpsRedirection()
+);
+```
+
+`/warmup` パスのみHTTPアクセスを許可し、他のすべてのエンドポイントはHTTPSにリダイレクトされます。
 
 ---
 
