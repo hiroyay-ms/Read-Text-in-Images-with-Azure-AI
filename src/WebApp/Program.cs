@@ -129,10 +129,8 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-// app.UseWhen(
-//    context => !WarmupController.IsWarmupRequest(context.Request.Path),
-//    mainApp => mainApp.UseHttpsRedirection()
-// );
+// Warmup エンドポイント以外のリクエストに対してのみ HTTPS リダイレクトを適用
+// App Service の Warmup 機能は HTTP でリクエストするため、リダイレクトを除外
 app.UseWhen(context => !context.Request.Path.StartsWithSegments("/warmup"),
     mainApp => mainApp.UseHttpsRedirection()
 );
@@ -271,11 +269,3 @@ app.MapRazorPages()
 
 app.Run();
 
-// Warmup エンドポイント用のヘルパークラス
-public static class WarmupController
-{
-    public static bool IsWarmupRequest(PathString path)
-    {
-        return path.StartsWithSegments("/warmup");
-    }
-}
