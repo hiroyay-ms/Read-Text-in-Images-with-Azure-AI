@@ -129,7 +129,11 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
+app.UseWhen(
+    context => !WarmupController.IsWarmupRequest(context.Request.Path),
+    mainApp => mainApp.UseHttpsRedirection()
+);
 
 app.UseRouting();
 
@@ -264,3 +268,12 @@ app.MapRazorPages()
    .WithStaticAssets();
 
 app.Run();
+
+// Warmup エンドポイント用のヘルパークラス
+public static class WarmupController
+{
+    public static bool IsWarmupRequest(PathString path)
+    {
+        return path.StartsWithSegments("/warmup");
+    }
+}
