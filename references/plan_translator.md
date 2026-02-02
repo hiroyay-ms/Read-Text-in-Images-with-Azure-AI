@@ -2,7 +2,7 @@
 
 **作成日**: 2026年2月2日  
 **対象**: Azure Translator (AI Foundry) を使用したドキュメント翻訳機能の追加  
-**状態**: 🔄 Phase 17 実装準備完了（Phase 16 完了）  
+**状態**: ✅ Phase 17 完了！ → 次は Phase 18 (テストとデバッグ)  
 **認証方式**: Entra ID 認証（DefaultAzureCredential）✅
 
 ---
@@ -454,13 +454,13 @@ UI コンポーネント:
 
 ---
 
-### Step 17.4: ナビゲーションの更新 (30分) ⬜ 未着手
+### Step 17.4: ナビゲーションの更新 (30分) ✅ 完了
 
 #### タスク
-- [ ] `_Layout.cshtml` にナビゲーションリンクを追加
-- [ ] `Pages/Index.cshtml` にカードを追加（横スクロール対応）
-- [ ] カードレイアウトを将来の拡張に対応させる
-- [ ] サブタイトルと使い方のヒントセクションを更新
+- [x] `_Layout.cshtml` にナビゲーションリンクを追加
+- [x] `Pages/Index.cshtml` にカードを追加（横スクロール対応）
+- [x] カードレイアウトを将来の拡張に対応させる
+- [x] サブタイトルと使い方のヒントセクションを更新
 
 #### ファイル: `Pages/Shared/_Layout.cshtml` の更新
 
@@ -474,10 +474,10 @@ UI コンポーネント:
 #### ファイル: `Pages/Index.cshtml` の更新
 
 **設計方針**:
-- カードの幅は既存（OCR, GPT-4o）と同じサイズを維持
+- カードの幅は固定幅550pxで統一（テキスト折り返しを防ぎ、一貫性を保つ）
 - 横スクロール可能なレイアウトに変更（将来の機能追加に対応）
-- Bootstrap の `.row-cols-*` と `.overflow-auto` を活用
-- 各カードは最小幅を設定して一貫性を保つ
+- Bootstrap の `.overflow-auto` を活用
+- 各カードは `flex: 0 0 auto` で幅を固定
 
 **新しいカード内容**:
 - **タイトル**: ドキュメント翻訳 (Translator)
@@ -514,17 +514,17 @@ UI コンポーネント:
     <div class="col-12">
         <div class="d-flex overflow-auto pb-3" style="gap: 1rem;">
             <!-- Document Intelligence カード -->
-            <div class="card shadow-sm" style="min-width: 350px; flex: 0 0 auto;">
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
                 <!-- カード内容 -->
             </div>
             
             <!-- GPT-4o カード -->
-            <div class="card shadow-sm" style="min-width: 350px; flex: 0 0 auto;">
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
                 <!-- カード内容 -->
             </div>
             
             <!-- Translator カード（新規） -->
-            <div class="card shadow-sm" style="min-width: 350px; flex: 0 0 auto;">
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
                 <div class="card-body">
                     <h5 class="card-title">
                         <i class="bi bi-translate"></i> ドキュメント翻訳
@@ -573,14 +573,25 @@ UI コンポーネント:
 ```
 
 #### 検証
-- [ ] ナビゲーションが更新されている
-- [ ] ホームページに Translator カードが追加されている
-- [ ] カードが横スクロール可能になっている
-- [ ] カードの幅が統一されている
-- [ ] サブタイトルが更新されている
-- [ ] 使い方のヒントが更新されている
-- [ ] リンクが正しく動作する
-- [ ] モバイル表示でも適切にスクロールできる
+- [x] ナビゲーションが更新されている
+- [x] ホームページに Translator カードが追加されている
+- [x] カードが横スクロール可能になっている
+- [x] カードの幅が統一されている
+- [x] サブタイトルが更新されている
+- [x] 使い方のヒントが更新されている
+- [x] リンクが正しく動作する
+- [x] モバイル表示でも適切にスクロールできる
+
+**実装完了日**: 2026年2月2日  
+**実装内容**:
+- `_Layout.cshtml` にナビゲーションリンク追加（Translator）
+- `Pages/Index.cshtml` を横スクロール対応レイアウトに変更
+- Translator カードを追加（btn-info で統一）
+- サブタイトル更新：「OCR、翻訳、ドキュメント処理」
+- 使い方のヒントに Translator 用途追加（ビジネスドキュメント、契約書、マニュアル）
+- 対応フォーマットに Translator 対応形式を追加
+- `site.css` に横スクロール用 CSS を追加（スムーズスクロール、スクロールバースタイリング）
+- **カード幅の最適化**: テキスト折り返しを防ぐため、固定幅を段階的に調整（350px → 420px → 480px → 520px → 550px）し、最終的に550pxで統一
 
 ---
 
@@ -589,12 +600,12 @@ UI コンポーネント:
 - [x] Pages/Translator/Index.cshtml.cs PageModel が実装されている ✅
 - [x] Pages/Translator/Index.cshtml UI が作成されている ✅
 - [x] wwwroot/js/translator.js JavaScript が実装されている ✅
-- [ ] ナビゲーションが更新されている（_Layout.cshtml と Index.cshtml）
+- [x] ナビゲーションが更新されている（_Layout.cshtml と Index.cshtml）✅
 - [x] ビルドが成功する ✅
 - [x] アプリケーションが起動する ✅
 - [x] 翻訳機能が動作する ✅
 
-**実装完了日**: 2026年2月2日（Step 17.1-17.3 完了、Step 17.4 残り）
+**実装完了日**: 2026年2月2日（Phase 17 完全完了！）🎉
 
 ---
 
@@ -800,11 +811,11 @@ src/WebApp/
 - [x] モデルクラスの作成 ✅
 - [x] Program.cs への DI 登録 ✅
 
-### Phase 17: UI と API 実装 🔄 実装中
+### Phase 17: UI と API 実装 ✅ 完了
 - [x] Pages/Translator/Index.cshtml.cs PageModel の実装 ✅
 - [x] Pages/Translator/Index.cshtml UI の作成 ✅
 - [x] wwwroot/js/translator.js JavaScript の実装 ✅
-- [ ] ナビゲーションの更新（_Layout.cshtml と Index.cshtml）
+- [x] ナビゲーションの更新（_Layout.cshtml と Index.cshtml）✅
 
 ### Phase 18: テストとデバッグ ⬜ 未着手
 - [ ] 統合テストの実施（正常系・異常系）
