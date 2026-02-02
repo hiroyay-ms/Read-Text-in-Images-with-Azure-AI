@@ -34,11 +34,11 @@ Azure Translator Service と Azure Blob Storage を統合し、ドキュメン�
 ### Step 16.1: Azure リソースの準備 (1時間) ✅ 完了
 
 #### タスク
-- [ ] Azure Portal で Azure Translator リソースを確認または作成
-- [ ] Azure Storage Account の確認または作成
-- [ ] Storage Account にコンテナを作成（source, target）
-- [ ] エンドポイント URL、リージョン、キーを取得
-- [ ] `appsettings.Development.json` に設定項目を追加
+- [x] Azure Portal で Azure Translator リソースを確認または作成
+- [x] Azure Storage Account の確認または作成
+- [x] Storage Account にコンテナを作成（source, target）
+- [x] エンドポイント URL、リージョン、キーを取得
+- [x] `appsettings.Development.json` に設定項目を追加
 
 #### Azure Portal での作業手順
 
@@ -67,6 +67,27 @@ Azure Translator Service と Azure Blob Storage を統合し、ドキュメン�
    ※ 1つのファイルごとに一時的に使用します
    ```
 
+4. **ロール割り当ての設定（重要）**
+   
+   **ローカル開発環境の場合:**
+   - Storage Account (`sttest7docs`) → アクセス制御 (IAM) → ロールの割り当て
+     - ロール: `Storage Blob Data Contributor`
+     - メンバー: 自分の Azure ユーザーアカウント
+   - Translator リソース → アクセス制御 (IAM) → ロールの割り当て
+     - ロール: `Cognitive Services User`
+     - メンバー: 自分の Azure ユーザーアカウント
+   
+   **App Service デプロイ時の場合:**
+   - App Service → ID → システム割り当てマネージド ID を「オン」に設定
+   - Storage Account (`sttest7docs`) → アクセス制御 (IAM) → ロールの割り当て
+     - ロール: `Storage Blob Data Contributor`
+     - メンバー: App Service のマネージド ID
+   - Translator リソース → アクセス制御 (IAM) → ロールの割り当て
+     - ロール: `Cognitive Services User`
+     - メンバー: App Service のマネージド ID
+   
+   ※ `DefaultAzureCredential` が環境に応じて自動的に適切な認証を選択します
+
 #### 設定ファイルの更新
 
 **ファイル: `appsettings.Development.json`**
@@ -90,8 +111,12 @@ Azure Translator Service と Azure Blob Storage を統合し、ドキュメン�
 **注意**: 
 - 既存の `DocumentIntelligence_Endpoint` と `AzureOpenAI` の設定は変更しません
 - **認証方式**: Entra ID 認証（DefaultAzureCredential）を使用 ✅
-- Translator リソースには「Cognitive Services User」ロールが必要
-- Storage Account には「Storage Blob Data Contributor」ロールが必要
+- **必須ロール割り当て**:
+  - Translator リソース: 「Cognitive Services User」ロール
+  - Storage Account: 「Storage Blob Data Contributor」ロール
+  - Storage Account: 「Storage Blob Delegator」ロール（ユーザー委任 SAS 生成用）← **重要**
+  - ローカル開発: 自分の Azure ユーザーアカウントに割り当て
+  - App Service: マネージド ID に割り当て
 
 #### 検証
 - [x] Azure Translator リソースが存在している
@@ -99,19 +124,21 @@ Azure Translator Service と Azure Blob Storage を統合し、ドキュメン�
 - [x] Blob コンテナ（source, target）が作成されている
 - [x] エンドポイント URL とリージョンが取得できている
 - [x] 認証方式が決定している（**Entra ID 認証を使用**）
+- [x] ロール割り当てが完了している（ローカル開発または App Service マネージド ID）
 - [x] appsettings.Development.json が更新されている
 
 **実装完了日**: 2026年2月2日  
-**認証方式**: Entra ID 認証（DefaultAzureCredential）
+**認証方式**: Entra ID 認証（DefaultAzureCredential）  
+**ロール割り当て**: Storage Blob Data Contributor, Cognitive Services User
 
 ---
 
 ### Step 16.2: NuGet パッケージのインストール (30分) ✅ 完了
 
 #### タスク
-- [ ] `Azure.AI.Translation.Document` パッケージをインストール
-- [ ] `Azure.Storage.Blobs` パッケージをインストール（既にインストール済みの可能性あり）
-- [ ] 依存関係の確認
+- [x] `Azure.AI.Translation.Document` パッケージをインストール
+- [x] `Azure.Storage.Blobs` パッケージをインストール（既にインストール済みの可能性あり）
+- [x] 依存関係の確認
 
 #### コマンド
 
@@ -143,8 +170,8 @@ dotnet build
 ### Step 16.3: サービスインターフェースの作成 (30分) ✅ 完了
 
 #### タスク
-- [ ] `ITranslatorService.cs` インターフェースの作成
-- [ ] メソッドシグネチャの定義
+- [x] `ITranslatorService.cs` インターフェースの作成
+- [x] メソッドシグネチャの定義
 
 #### ファイル: `Services/ITranslatorService.cs`
 
@@ -165,15 +192,15 @@ dotnet build
 ### Step 16.4: Translator サービスの実装 (1.5時間) ✅ 完了
 
 #### タスク
-- [ ] `AzureTranslatorService.cs` の実装
-- [ ] DocumentTranslationClient の初期化
-- [ ] BlobServiceClient の初期化
-- [ ] ドキュメント検証ロジックの実装
-- [ ] ドキュメントアップロードロジックの実装
-- [ ] 翻訳ジョブ開始ロジックの実装
-- [ ] 翻訳状態確認ロジックの実装
-- [ ] 翻訳済みドキュメントダウンロードロジックの実装
-- [ ] エラーハンドリングの実装
+- [x] `AzureTranslatorService.cs` の実装
+- [x] DocumentTranslationClient の初期化
+- [x] BlobServiceClient の初期化
+- [x] ドキュメント検証ロジックの実装
+- [x] ドキュメントアップロードロジックの実装
+- [x] 翻訳ジョブ開始ロジックの実装
+- [x] 翻訳状態確認ロジックの実装
+- [x] 翻訳済みドキュメントダウンロードロジックの実装
+- [x] エラーハンドリングの実装
 
 #### ファイル: `Services/AzureTranslatorService.cs`
 
@@ -198,17 +225,26 @@ dotnet build
 - DocumentTranslationClient と BlobServiceClient の初期化（DefaultAzureCredential）
 - ドキュメント検証（40MB 制限、対応形式チェック）
 - Blob へのアップロード（一意のファイル名生成）
+- **ユーザー委任 SAS トークンの生成**（Entra ID 認証対応）
+  - ソースコンテナ: Read + List 権限
+  - ターゲットコンテナ: Read + Write + List 権限
+- **コンテナベースの URI 使用**（Document Translation API の要件）
 - 翻訳ジョブの開始と同期的な待機（WaitForCompletionAsync）
-- 翻訳済みドキュメントのダウンロード
+- 翻訳済みドキュメントのダウンロード（ソースと同じファイル名）
 - 一時ファイルのクリーンアップ
 - 詳細なエラーハンドリングとロギング
+
+**重要な実装ポイント**:
+- Document Translation API はアカウントキーではなく、ユーザー委任 SAS を使用
+- ソースとターゲットの両方でコンテナ URI が必要
+- 翻訳後のファイル名はソースファイル名と同じ
 
 ---
 
 ### Step 16.5: モデルクラスの作成 (30分) ✅ 完了
 
 #### タスク
-- [ ] `TranslationResult.cs` の作成
+- [x] `TranslationResult.cs` の作成
 
 #### ファイル: `Models/TranslationResult.cs`
 
@@ -235,7 +271,7 @@ dotnet build
 ### Step 16.6: Program.cs への依存性注入の追加 (15分) ✅ 完了
 
 #### タスク
-- [ ] Program.cs に ITranslatorService の DI 登録を追加
+- [x] Program.cs に ITranslatorService の DI 登録を追加
 
 #### ファイル: `Program.cs` の更新
 
@@ -281,13 +317,13 @@ Azure Translator を使用したドキュメント翻訳機能の UI とバッ�
 
 ---
 
-### Step 17.1: PageModel の実装 (1時間) ⬜ 未着手
+### Step 17.1: PageModel の実装 (1時間) ✅ 完了
 
 #### タスク
-- [ ] `Pages/Translator/Index.cshtml.cs` の作成
-- [ ] 翻訳処理のハンドラー実装（同期的に完了を待機し、ファイルを返却）
-- [ ] 言語一覧取得のハンドラー実装
-- [ ] エラーハンドリングの実装
+- [x] `Pages/Translator/Index.cshtml.cs` の作成
+- [x] 翻訳処理のハンドラー実装（同期的に完了を待機し、ファイルを返却）
+- [x] 言語一覧取得のハンドラー実装
+- [x] エラーハンドリングの実装
 
 #### ファイル: `Pages/Translator/Index.cshtml.cs`
 
@@ -303,21 +339,29 @@ Azure Translator を使用したドキュメント翻訳機能の UI とバッ�
    - JSON で返却（言語コードと言語名の辞書）
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] すべてのハンドラーが実装されている
-- [ ] ビルドが成功する
+- [x] ファイルが作成されている ✅
+- [x] すべてのハンドラーが実装されている ✅
+- [x] ビルドが成功する ✅
+
+**実装完了日**: 2026年2月2日  
+**実装内容**:
+- OnGetLanguagesAsync() - サポート言語一覧を JSON で返却
+- OnPostTranslateAsync() - ドキュメント翻訳を実行し、FileResult で翻訳済みファイルを返却
+- ダウンロードファイル名を改善：`元のファイル名_言語コード.拡張子`
+- 翻訳情報をカスタムヘッダーとして追加（文字数、処理時間、言語）
+- バリデーションとエラーハンドリング
 
 ---
 
-### Step 17.2: Razor Page の実装 (1.5時間) ⬜ 未着手
+### Step 17.2: Razor Page の実装 (1.5時間) ✅ 完了
 
 #### タスク
-- [ ] `Pages/Translator/Index.cshtml` の作成
-- [ ] UI の実装（OCR ページと同様の構造）
-- [ ] ファイルアップロードエリアの作成
-- [ ] 言語選択ドロップダウンの実装
-- [ ] 翻訳結果表示エリアの実装
-- [ ] ダウンロードボタンの実装
+- [x] `Pages/Translator/Index.cshtml` の作成
+- [x] UI の実装（OCR ページと同様の構造）
+- [x] ファイルアップロードエリアの作成
+- [x] 言語選択ドロップダウンの実装
+- [x] 翻訳結果表示エリアの実装
+- [x] ダウンロードボタンの実装
 
 #### ファイル: `Pages/Translator/Index.cshtml`
 
@@ -340,23 +384,36 @@ UI コンポーネント:
    - PDF, DOCX, XLSX, PPTX, HTML, TXT
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] HTML 構造が正しい
-- [ ] OCR ページと同様のデザイン
+- [x] ファイルが作成されている ✅
+- [x] HTML 構造が正しい ✅
+- [x] OCR ページと同様のデザイン ✅
+
+**実装完了日**: 2026年2月2日  
+**実装内容**:
+- 2カラムレイアウト（左: アップロード＆言語選択、右: 結果表示）
+- ドラッグ&ドロップエリア
+- 翻訳元言語（自動検出）と翻訳先言語の選択ドロップダウン
+- ドキュメント情報表示（ファイル名、サイズ、形式、アイコン）
+  - テーブル形式ではなく縦書き形式で表示
+  - ファイル名は改行で表示、サイズと形式は同じ行に表示
+- 翻訳結果表示（ローディング、成功メッセージ、翻訳情報）
+  - 翻訳文字数：カンマ区切りで表示
+  - 処理時間：秒または分秒で表示
+- 紫色のグラデーション背景
 
 ---
 
-### Step 17.3: JavaScript の実装 (1.5時間) ⬜ 未着手
+### Step 17.3: JavaScript の実装 (1.5時間) ✅ 完了
 
 #### タスク
-- [ ] `wwwroot/js/translator.js` の作成
-- [ ] ファイルアップロード処理
-- [ ] ドラッグ&ドロップ処理
-- [ ] 言語選択処理
-- [ ] フォーム送信処理
-- [ ] ポーリング処理（翻訳状態の定期確認）
-- [ ] 結果表示処理
-- [ ] ダウンロード処理
+- [x] `wwwroot/js/translator.js` の作成
+- [x] ファイルアップロード処理
+- [x] ドラッグ&ドロップ処理
+- [x] 言語選択処理
+- [x] フォーム送信処理
+- [x] ポーリング処理（翻訳状態の定期確認）
+- [x] 結果表示処理
+- [x] ダウンロード処理
 
 #### ファイル: `wwwroot/js/translator.js`
 
@@ -377,9 +434,23 @@ UI コンポーネント:
    - タイムアウトエラーの処理
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] JavaScript 構文が正しい
-- [ ] ocr-app.js と同様の構造
+- [x] ファイルが作成されている ✅
+- [x] JavaScript 構文が正しい ✅
+- [x] ocr-app.js と同様の構造 ✅
+
+**実装完了日**: 2026年2月2日  
+**実装内容**:
+- TranslatorApp クラス
+- 言語一覧の動的読み込み（ページ読み込み時に API から取得）
+- ドラッグ&ドロップ処理
+- ファイル選択とドキュメント情報表示
+- 翻訳リクエスト（同期的な完了待機）
+- 自動ダウンロード処理（FileResult を受信してダウンロード）
+- ファイルアイコンの動的表示
+- カスタムヘッダーから翻訳情報を取得（文字数、処理時間）
+  - 文字数をカンマ区切りでフォーマットして表示
+  - 60秒未満は秒表示、60秒以上は分秒表示
+- エラーハンドリング
 
 ---
 
@@ -515,14 +586,15 @@ UI コンポーネント:
 
 ### Phase 17 完了チェックリスト
 
-- [ ] Pages/Translator/Index.cshtml.cs PageModel が実装されている
-- [ ] Pages/Translator/Index.cshtml UI が作成されている
-- [ ] wwwroot/js/translator.js JavaScript が実装されている
+- [x] Pages/Translator/Index.cshtml.cs PageModel が実装されている ✅
+- [x] Pages/Translator/Index.cshtml UI が作成されている ✅
+- [x] wwwroot/js/translator.js JavaScript が実装されている ✅
 - [ ] ナビゲーションが更新されている（_Layout.cshtml と Index.cshtml）
-- [ ] ビルドが成功する
-- [ ] アプリケーションが起動する
+- [x] ビルドが成功する ✅
+- [x] アプリケーションが起動する ✅
+- [x] 翻訳機能が動作する ✅
 
-**実装完了日**: ___________
+**実装完了日**: 2026年2月2日（Step 17.1-17.3 完了、Step 17.4 残り）
 
 ---
 
@@ -728,10 +800,10 @@ src/WebApp/
 - [x] モデルクラスの作成 ✅
 - [x] Program.cs への DI 登録 ✅
 
-### Phase 17: UI と API 実装 ⬜ 未着手
-- [ ] Pages/Translator/Index.cshtml.cs PageModel の実装
-- [ ] Pages/Translator/Index.cshtml UI の作成
-- [ ] wwwroot/js/translator.js JavaScript の実装
+### Phase 17: UI と API 実装 🔄 実装中
+- [x] Pages/Translator/Index.cshtml.cs PageModel の実装 ✅
+- [x] Pages/Translator/Index.cshtml UI の作成 ✅
+- [x] wwwroot/js/translator.js JavaScript の実装 ✅
 - [ ] ナビゲーションの更新（_Layout.cshtml と Index.cshtml）
 
 ### Phase 18: テストとデバッグ ⬜ 未着手

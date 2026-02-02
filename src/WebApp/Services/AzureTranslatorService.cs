@@ -138,7 +138,8 @@ public class AzureTranslatorService : ITranslatorService
             var uniqueId = Guid.NewGuid().ToString();
             var fileExtension = Path.GetExtension(document.FileName);
             var sourceFileName = $"{uniqueId}{fileExtension}";
-            var targetFileName = $"{uniqueId}_translated{fileExtension}";
+            // Document Translation API はソースファイル名をそのまま使用してターゲットに保存
+            var targetFileName = sourceFileName;
 
             // 3. ソースコンテナにドキュメントをアップロード
             var sourceContainerClient = _blobServiceClient.GetBlobContainerClient(_sourceContainerName);
@@ -149,21 +150,25 @@ public class AzureTranslatorService : ITranslatorService
             await using var stream = document.OpenReadStream();
             await sourceBlobClient.UploadAsync(stream, overwrite: true);
 
-            // 4. 翻訳ジョブを開始
-            var sourceUri = sourceBlobClient.Uri;
+            // 4. SAS トークン付き URI を生成（Translator API がアクセスするために必要）
+            // ソースもコンテナ URI を使用（Document Translation API の要件）
+            var sourceContainerUri = await GenerateContainerSasUriForSourceAsync(sourceContainerClient);
             var targetContainerClient = _blobServiceClient.GetBlobContainerClient(_targetContainerName);
-            var targetUri = targetContainerClient.Uri;
+            var targetContainerUri = await GenerateContainerSasUriAsync(targetContainerClient);
 
-            var input = new DocumentTranslationInput(sourceUri, targetUri, targetLanguage);
+            // DocumentTranslationInput を作成（コンテナ全体を対象）
+            var input = new DocumentTranslationInput(sourceContainerUri, targetContainerUri, targetLanguage);
+            
             if (!string.IsNullOrEmpty(sourceLanguage))
             {
                 input.Source.LanguageCode = sourceLanguage;
             }
 
             _logger.LogInformation(
-                "翻訳ジョブを開始します。ソース: {SourceUri}, ターゲット: {TargetUri}",
-                sourceUri,
-                targetUri);
+                "翻訳ジョブを開始します。ソース: {SourceContainer}, ターゲット: {TargetContainer}, ファイル: {FileName}",
+                _sourceContainerName,
+                _targetContainerName,
+                sourceFileName);
 
             var operation = await _translationClient.StartTranslationAsync(input);
 
@@ -318,5 +323,146 @@ public class AzureTranslatorService : ITranslatorService
     {
         _logger.LogInformation("サポート言語一覧を返します: {Count}言語", SupportedLanguages.Count);
         return Task.FromResult(new Dictionary<string, string>(SupportedLanguages));
+    }
+
+    /// <summary>
+    /// ソースコンテナのユーザー委任 SAS トークン付き URI を生成（読み取り・リスト権限）
+    /// </summary>
+    private async Task<Uri> GenerateContainerSasUriForSourceAsync(BlobContainerClient containerClient)
+    {
+        try
+        {
+            // ユーザー委任キーを取得（Entra ID 認証を使用）
+            var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
+            var expiresOn = DateTimeOffset.UtcNow.AddHours(1);
+            
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(startsOn, expiresOn);
+
+            // SAS トークンの設定
+            var sasBuilder = new Azure.Storage.Sas.BlobSasBuilder
+            {
+                BlobContainerName = containerClient.Name,
+                Resource = "c", // Container
+                StartsOn = startsOn,
+                ExpiresOn = expiresOn
+            };
+
+            // 読み取り・リスト権限を付与（ソースドキュメントアクセス用）
+            sasBuilder.SetPermissions(
+                Azure.Storage.Sas.BlobContainerSasPermissions.Read |
+                Azure.Storage.Sas.BlobContainerSasPermissions.List);
+
+            // ユーザー委任 SAS トークンを生成
+            var sasToken = sasBuilder.ToSasQueryParameters(
+                userDelegationKey.Value,
+                _blobServiceClient.AccountName);
+            
+            var sasUri = new UriBuilder(containerClient.Uri)
+            {
+                Query = sasToken.ToString()
+            }.Uri;
+            
+            _logger.LogInformation("ソースコンテナ ユーザー委任 SAS URI 生成完了: {ContainerName}", containerClient.Name);
+            return sasUri;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ソースコンテナ SAS URI の生成に失敗しました");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Blob のユーザー委任 SAS トークン付き URI を生成（Entra ID 認証対応）
+    /// </summary>
+    private async Task<Uri> GenerateSasUriAsync(BlobClient blobClient)
+    {
+        try
+        {
+            // ユーザー委任キーを取得（Entra ID 認証を使用）
+            var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
+            var expiresOn = DateTimeOffset.UtcNow.AddHours(1);
+            
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(startsOn, expiresOn);
+
+            // SAS トークンの設定
+            var sasBuilder = new Azure.Storage.Sas.BlobSasBuilder
+            {
+                BlobContainerName = blobClient.BlobContainerName,
+                BlobName = blobClient.Name,
+                Resource = "b", // Blob
+                StartsOn = startsOn,
+                ExpiresOn = expiresOn
+            };
+
+            // 読み取り権限を付与
+            sasBuilder.SetPermissions(Azure.Storage.Sas.BlobSasPermissions.Read);
+
+            // ユーザー委任 SAS トークンを生成
+            var sasToken = sasBuilder.ToSasQueryParameters(
+                userDelegationKey.Value,
+                _blobServiceClient.AccountName);
+            
+            var sasUri = new UriBuilder(blobClient.Uri)
+            {
+                Query = sasToken.ToString()
+            }.Uri;
+            
+            _logger.LogInformation("ユーザー委任 SAS URI 生成完了: {BlobName}", blobClient.Name);
+            return sasUri;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SAS URI の生成に失敗しました");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// コンテナのユーザー委任 SAS トークン付き URI を生成（Entra ID 認証対応）
+    /// </summary>
+    private async Task<Uri> GenerateContainerSasUriAsync(BlobContainerClient containerClient)
+    {
+        try
+        {
+            // ユーザー委任キーを取得（Entra ID 認証を使用）
+            var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
+            var expiresOn = DateTimeOffset.UtcNow.AddHours(1);
+            
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(startsOn, expiresOn);
+
+            // SAS トークンの設定
+            var sasBuilder = new Azure.Storage.Sas.BlobSasBuilder
+            {
+                BlobContainerName = containerClient.Name,
+                Resource = "c", // Container
+                StartsOn = startsOn,
+                ExpiresOn = expiresOn
+            };
+
+            // 読み取り・書き込み・リスト権限を付与（翻訳結果の保存とアクセス用）
+            sasBuilder.SetPermissions(
+                Azure.Storage.Sas.BlobContainerSasPermissions.Read |
+                Azure.Storage.Sas.BlobContainerSasPermissions.Write |
+                Azure.Storage.Sas.BlobContainerSasPermissions.List);
+
+            // ユーザー委任 SAS トークンを生成
+            var sasToken = sasBuilder.ToSasQueryParameters(
+                userDelegationKey.Value,
+                _blobServiceClient.AccountName);
+            
+            var sasUri = new UriBuilder(containerClient.Uri)
+            {
+                Query = sasToken.ToString()
+            }.Uri;
+            
+            _logger.LogInformation("コンテナ ユーザー委任 SAS URI 生成完了: {ContainerName}", containerClient.Name);
+            return sasUri;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "コンテナ SAS URI の生成に失敗しました");
+            throw;
+        }
     }
 }
