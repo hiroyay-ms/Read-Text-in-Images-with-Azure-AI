@@ -80,6 +80,9 @@ builder.Services.AddScoped<IOcrService, DocumentIntelligenceService>();
 // GPT-4o Vision サービスの登録
 builder.Services.AddScoped<IGptVisionService, OpenAIVisionService>();
 
+// Azure Translator サービスの登録
+builder.Services.AddScoped<ITranslatorService, AzureTranslatorService>();
+
 // ヘルスチェックの登録
 builder.Services.AddHealthChecks()
     .AddCheck<DocumentIntelligenceHealthCheck>(

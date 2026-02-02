@@ -2,7 +2,7 @@
 
 **作成日**: 2026年2月2日  
 **対象**: Azure Translator (AI Foundry) を使用したドキュメント翻訳機能の追加  
-**状態**: 🔄 Phase 16 実装中（Step 16.1 完了）  
+**状態**: 🔄 Phase 17 実装準備完了（Phase 16 完了）  
 **認証方式**: Entra ID 認証（DefaultAzureCredential）✅
 
 ---
@@ -22,12 +22,12 @@ Azure Translator の Document Translation API を使用し、Azure Blob Storage 
 
 ---
 
-## Phase 16: Azure Translator 基盤構築 (推定: 3-4時間) 🔄 実装中
+## Phase 16: Azure Translator 基盤構築 (推定: 3-4時間) ✅ 完了
 
 ### ゴール
 Azure Translator Service と Azure Blob Storage を統合し、ドキュメント翻訳の基盤を構築
 
-**進捗**: Step 16.1-16.2 完了 → 次は Step 16.3 (サービスインターフェースの作成)
+**進捗**: Phase 16 完了 🎉 → 次は Phase 17 (UI と API エンドポイントの実装)
 
 ---
 
@@ -140,7 +140,7 @@ dotnet build
 
 ---
 
-### Step 16.3: サービスインターフェースの作成 (30分) ⬜ 未着手
+### Step 16.3: サービスインターフェースの作成 (30分) ✅ 完了
 
 #### タスク
 - [ ] `ITranslatorService.cs` インターフェースの作成
@@ -154,13 +154,15 @@ dotnet build
 - `Task<Dictionary<string, string>> GetSupportedLanguagesAsync()` - サポートされている言語の辞書（コード→名前）を取得
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] インターフェースが定義されている
-- [ ] ビルドが成功する
+- [x] ファイルが作成されている ✅
+- [x] インターフェースが定義されている ✅
+- [x] ビルドが成功する ✅
+
+**実装完了日**: 2026年2月2日
 
 ---
 
-### Step 16.4: Translator サービスの実装 (1.5時間) ⬜ 未着手
+### Step 16.4: Translator サービスの実装 (1.5時間) ✅ 完了
 
 #### タスク
 - [ ] `AzureTranslatorService.cs` の実装
@@ -186,14 +188,24 @@ dotnet build
 8. **ロギング**: 各ステップでの詳細なログ出力
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] すべてのメソッドが実装されている
-- [ ] ビルドが成功する
-- [ ] エラーハンドリングが実装されている
+- [x] ファイルが作成されている ✅
+- [x] すべてのメソッドが実装されている ✅
+- [x] ビルドが成功する ✅
+- [x] エラーハンドリングが実装されている ✅
+
+**実装完了日**: 2026年2月2日  
+**実装内容**:
+- DocumentTranslationClient と BlobServiceClient の初期化（DefaultAzureCredential）
+- ドキュメント検証（40MB 制限、対応形式チェック）
+- Blob へのアップロード（一意のファイル名生成）
+- 翻訳ジョブの開始と同期的な待機（WaitForCompletionAsync）
+- 翻訳済みドキュメントのダウンロード
+- 一時ファイルのクリーンアップ
+- 詳細なエラーハンドリングとロギング
 
 ---
 
-### Step 16.5: モデルクラスの作成 (30分) ⬜ 未着手
+### Step 16.5: モデルクラスの作成 (30分) ✅ 完了
 
 #### タスク
 - [ ] `TranslationResult.cs` の作成
@@ -213,12 +225,14 @@ dotnet build
 - `TimeSpan Duration`: 処理時間
 
 #### 検証
-- [ ] ファイルが作成されている
-- [ ] ビルドが成功する
+- [x] ファイルが作成されている ✅
+- [x] ビルドが成功する ✅
+
+**実装完了日**: 2026年2月2日
 
 ---
 
-### Step 16.6: Program.cs への依存性注入の追加 (15分) ⬜ 未着手
+### Step 16.6: Program.cs への依存性注入の追加 (15分) ✅ 完了
 
 #### タスク
 - [ ] Program.cs に ITranslatorService の DI 登録を追加
@@ -233,9 +247,11 @@ builder.Services.AddScoped<ITranslatorService, AzureTranslatorService>();
 ```
 
 #### 検証
-- [ ] Program.cs が正しく更新されている
-- [ ] ビルドが成功する
-- [ ] アプリケーションが起動する
+- [x] Program.cs が正しく更新されている ✅
+- [x] ビルドが成功する ✅
+- [x] アプリケーションが起動する ✅
+
+**実装完了日**: 2026年2月2日
 
 ---
 
@@ -246,14 +262,15 @@ builder.Services.AddScoped<ITranslatorService, AzureTranslatorService>();
 - [x] appsettings.Development.json に設定が追加されている ✅
 - [x] Azure.AI.Translation.Document パッケージがインストールされている ✅
 - [x] Azure.Storage.Blobs パッケージがインストールされている ✅
-- [ ] ITranslatorService インターフェースが作成されている
-- [ ] AzureTranslatorService が実装されている
-- [ ] モデルクラスが作成されている
-- [ ] Program.cs に DI が登録されている
-- [ ] ビルドが成功する
-- [ ] エラーがない
+- [x] ITranslatorService インターフェースが作成されている ✅
+- [x] AzureTranslatorService が実装されている ✅
+- [x] モデルクラスが作成されている ✅
+- [x] Program.cs に DI が登録されている ✅
+- [x] ビルドが成功する ✅
+- [x] エラーがない ✅
 
-**実装完了日**: ___________
+**実装完了日**: 2026年2月2日  
+**Phase 16 完全完了！** 🎉
 
 ---
 
@@ -700,16 +717,16 @@ src/WebApp/
 
 ## 🔧 実装チェックリスト（全体）
 
-### Phase 16: Azure Translator 基盤構築 🔄 実装中
+### Phase 16: Azure Translator 基盤構築 ✅ 完了
 - [x] Azure Translator リソースの準備 ✅
 - [x] Azure Storage Account とコンテナの作成 ✅
 - [x] appsettings.Development.json の設定 ✅
 - [x] Azure.AI.Translation.Document パッケージのインストール ✅
 - [x] Azure.Storage.Blobs パッケージのインストール ✅
-- [ ] ITranslatorService インターフェースの作成
-- [ ] AzureTranslatorService の実装
-- [ ] モデルクラスの作成
-- [ ] Program.cs への DI 登録
+- [x] ITranslatorService インターフェースの作成 ✅
+- [x] AzureTranslatorService の実装 ✅
+- [x] モデルクラスの作成 ✅
+- [x] Program.cs への DI 登録 ✅
 
 ### Phase 17: UI と API 実装 ⬜ 未着手
 - [ ] Pages/Translator/Index.cshtml.cs PageModel の実装
