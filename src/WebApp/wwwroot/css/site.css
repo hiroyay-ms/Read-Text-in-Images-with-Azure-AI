@@ -89,3 +89,28 @@ body {
   height: auto;
   object-fit: contain;
 }
+
+/* 横スクロールのスムーズ化 */
+.overflow-auto {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* スクロールバーのスタイリング（オプション） */
+.overflow-auto::-webkit-scrollbar {
+    height: 8px;
+}
+
+.overflow-auto::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.overflow-auto::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+.overflow-auto::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}

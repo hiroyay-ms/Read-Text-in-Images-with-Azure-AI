@@ -6,13 +6,13 @@
 
 <div class="text-center">
     <h1 class="display-4">Azure AI サンプル アプリケーション</h1>
-    <p class="lead">Azure AI を活用した画像からテキスト抽出のデモアプリケーションです。</p>
+    <p class="lead">Azure AI を活用した OCR、翻訳、ドキュメント処理のデモアプリケーションです。</p>
     
     <div class="mt-5">
-        <div class="row">
+        <h2 class="mb-4">機能一覧</h2>
+        <div class="d-flex overflow-auto pb-3" style="gap: 1rem;">
             <!-- Document Intelligence OCR -->
-            <div class="col-md-6 mb-4">
-                <div class="card h-100">
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-file-text"></i> OCR (Document Intelligence)
@@ -31,11 +31,9 @@
                         </a>
                     </div>
                 </div>
-            </div>
             
             <!-- GPT-4o Vision OCR -->
-            <div class="col-md-6 mb-4">
-                <div class="card h-100">
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-robot"></i> OCR (GPT-4o)
@@ -54,7 +52,27 @@
                         </a>
                     </div>
                 </div>
-            </div>
+            
+            <!-- Translator -->
+            <div class="card shadow-sm" style="width: 550px; flex: 0 0 auto;">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-translate"></i> ドキュメント翻訳
+                        </h5>
+                        <p class="card-text">
+                            Azure Translator を使用したドキュメント翻訳。<br>
+                            形式を保持したまま、100以上の言語間で翻訳できます。
+                        </p>
+                        <ul class="list-unstyled">
+                            <li><i class="bi bi-check-circle text-success"></i> 100以上の言語間での翻訳</li>
+                            <li><i class="bi bi-check-circle text-success"></i> ドキュメント形式を保持</li>
+                            <li><i class="bi bi-check-circle text-success"></i> 即座に翻訳完了</li>
+                        </ul>
+                        <a href="/Translator" class="btn btn-info btn-lg w-100 text-white">
+                            <i class="bi bi-arrow-right-circle"></i> ドキュメント翻訳を試す
+                        </a>
+                    </div>
+                </div>
         </div>
     </div>
     
@@ -64,11 +82,12 @@
             <ul class="mb-0">
                 <li><strong>Document Intelligence:</strong> 高精度・高速・低コストで、座標情報が必要な場合に最適</li>
                 <li><strong>GPT-4o:</strong> 文脈理解が必要、または特定の形式での抽出が必要な場合に最適</li>
+                <li><strong>Translator:</strong> ビジネスドキュメント、契約書、マニュアルなどの多言語化に最適</li>
             </ul>
         </div>
         <p class="text-muted">
             <small>
-                対応フォーマット: JPG, PNG, PDF, TIFF, BMP (Document Intelligence) | JPG, PNG, GIF, WebP (GPT-4o)
+                対応フォーマット: JPG, PNG, PDF, TIFF, BMP (Document Intelligence) | JPG, PNG, GIF, WebP (GPT-4o) | PDF, DOCX, XLSX, PPTX, HTML, TXT (Translator)
             </small>
         </p>
     </div>

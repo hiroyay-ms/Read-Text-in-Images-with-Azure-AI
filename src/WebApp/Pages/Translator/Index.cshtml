@@ -1,0 +1,188 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Document Translator";
+}
+
+<style>
+    body {
+        background: linear-gradient(135deg, #00B4D8 0%, #0077B6 100%);
+        min-height: 100vh;
+    }
+</style>
+
+<form method="post" id="mainForm">
+    @Html.AntiForgeryToken()
+</form>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card shadow">
+                <div class="card-body p-4">
+                    <h1 class="card-title text-center mb-4">Azure Translator - Document Translation</h1>
+
+                    <!-- ファイルアップロードエリア -->
+                    <div class="mb-4">
+                        <!-- ドラッグ&ドロップエリア -->
+                        <div id="dropArea" class="border border-2 border-dashed rounded p-4 text-center mb-3">
+                            <p class="mb-2">
+                                <i class="bi bi-cloud-upload" style="font-size: 2rem;"></i>
+                            </p>
+                            <p class="mb-2">ここにドキュメントをドラッグ&ドロップ</p>
+                            <p class="text-muted mb-3">または</p>
+                            <p class="mb-0">
+                                <a href="#" id="fileSelectLink" class="text-decoration-none">
+                                    <i class="bi bi-file-earmark-arrow-up"></i> ファイルの選択
+                                </a>
+                            </p>
+                            <input type="file" 
+                                   class="d-none" 
+                                   id="documentFile" 
+                                   accept=".pdf,.docx,.xlsx,.pptx,.html,.htm,.txt,.csv,.tsv">
+                        </div>
+
+                        <!-- 言語選択エリア -->
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="sourceLanguage" class="form-label">翻訳元言語</label>
+                                <select class="form-select" id="sourceLanguage">
+                                    <option value="">自動検出</option>
+                                    <!-- JavaScript で動的に追加 -->
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="targetLanguage" class="form-label">翻訳先言語 <span class="text-danger">*</span></label>
+                                <select class="form-select" id="targetLanguage" required>
+                                    <option value="">言語を選択してください</option>
+                                    <!-- JavaScript で動的に追加 -->
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- 対応形式の説明 -->
+                        <div class="alert alert-info mb-3" role="alert">
+                            <small>
+                                <i class="bi bi-info-circle"></i>
+                                <strong>対応形式:</strong> PDF, DOCX, XLSX, PPTX, HTML, TXT, CSV, TSV (最大 40MB)
+                            </small>
+                        </div>
+
+                        <div class="d-grid">
+                            <button class="btn btn-info btn-lg text-white" id="translateBtn" disabled>
+                                <i class="bi bi-translate"></i> 翻訳する
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- エラー表示 -->
+                    <div id="errorArea" class="alert alert-danger" style="display: none;" role="alert"></div>
+
+                    <!-- 結果表示エリア -->
+                    <div id="resultArea">
+                        <div class="row">
+                            <!-- 左側: ドキュメント情報 -->
+                            <div class="col-md-5">
+                                <h5>選択されたドキュメント <span id="fileNameDisplay" class="text-muted" style="font-size: 0.9rem;"></span></h5>
+                                <div id="documentInfoContainer" class="border rounded p-3 d-flex align-items-center justify-content-center" style="min-height: 300px; background-color: #f8f9fa;">
+                                    <!-- 初期状態 -->
+                                    <div id="noDocumentMessage" class="text-center">
+                                        <p class="text-muted mb-2">
+                                            <i class="bi bi-file-earmark" style="font-size: 3rem;"></i>
+                                        </p>
+                                        <p class="text-muted">ドキュメントが選択されていません</p>
+                                    </div>
+
+                                    <!-- ドキュメント選択後 -->
+                                    <div id="documentInfo" style="display: none; width: 100%;">
+                                        <div class="text-center mb-3">
+                                            <i id="fileIcon" class="bi bi-file-earmark-text" style="font-size: 4rem; color: #6c757d;"></i>
+                                        </div>
+                                        <div class="mb-2">
+                                            <strong>ファイル名:</strong><br>
+                                            <span id="fileName" class="text-break"></span>
+                                        </div>
+                                        <div class="mb-2">
+                                            <strong>サイズ:</strong> <span id="fileSize"></span>
+                                        </div>
+                                        <div>
+                                            <strong>形式:</strong> <span id="fileType"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 右側: 翻訳結果 -->
+                            <div class="col-md-7">
+                                <h5>翻訳結果</h5>
+                                <div id="resultContainer" class="border rounded p-3 position-relative d-flex align-items-center justify-content-center" style="min-height: 300px; background-color: #f8f9fa;">
+                                    <!-- 初期メッセージ -->
+                                    <div id="noResultMessage" class="text-center">
+                                        <p class="text-muted mb-2">
+                                            <i class="bi bi-translate" style="font-size: 3rem;"></i>
+                                        </p>
+                                        <p class="text-muted mb-0">翻訳がまだ実行されていません</p>
+                                    </div>
+                                    
+                                    <!-- ローディング表示 -->
+                                    <div id="loadingInResult" class="text-center" style="display: none;">
+                                        <div class="spinner-border text-info mb-3" role="status">
+                                            <span class="visually-hidden">翻訳中...</span>
+                                        </div>
+                                        <p class="text-muted mb-1"><strong>翻訳処理中...</strong></p>
+                                        <p class="text-muted small mb-0">ドキュメントのサイズによっては数分かかる場合があります</p>
+                                    </div>
+                                    
+                                    <!-- 翻訳成功 -->
+                                    <div id="successResult" class="text-center" style="display: none; width: 100%;">
+                                        <div class="mb-3">
+                                            <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
+                                        </div>
+                                        <h5 class="text-success mb-3">翻訳が完了しました！</h5>
+                                        <p class="text-muted mb-3">翻訳済みドキュメントのダウンロードが開始されます</p>
+                                        
+                                        <!-- 翻訳情報 -->
+                                        <div class="card">
+                                            <div class="card-body">
+                                                <h6 class="card-subtitle mb-2 text-muted">翻訳情報</h6>
+                                                <table class="table table-sm mb-0">
+                                                    <tr>
+                                                        <th style="width: 40%;">翻訳元:</th>
+                                                        <td id="resultSourceLang"></td>
+                                                    </tr>
+                                                    <tr>
+                                                        <th>翻訳先:</th>
+                                                        <td id="resultTargetLang"></td>
+                                                    </tr>
+                                                    <tr>
+                                                        <th>翻訳文字数:</th>
+                                                        <td id="resultCharCount"></td>
+                                                    </tr>
+                                                    <tr>
+                                                        <th>処理時間:</th>
+                                                        <td id="resultDuration"></td>
+                                                    </tr>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    #dropArea.drag-over {
+        background-color: #e7f3ff;
+        border-color: #0d6efd;
+    }
+</style>
+
+@section Scripts {
+    <script src="~/js/translator.js"></script>
+}
