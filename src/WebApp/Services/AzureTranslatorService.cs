@@ -150,19 +150,23 @@ public class AzureTranslatorService : ITranslatorService
             await using var stream = document.OpenReadStream();
             await sourceBlobClient.UploadAsync(stream, overwrite: true);
 
-            // 4. SAS トークン付き URI を生成（Translator API がアクセスするために必要）
-            // ソースもコンテナ URI を使用（Document Translation API の要件）
-            var sourceContainerUri = await GenerateContainerSasUriForSourceAsync(sourceContainerClient);
+            // 4. Managed Identity を使用してコンテナにアクセス（ネットワーク制限環境対応）
+            // Translator リソースの Managed Identity が Storage にアクセスするため、SAS トークンは不要
             var targetContainerClient = _blobServiceClient.GetBlobContainerClient(_targetContainerName);
-            var targetContainerUri = await GenerateContainerSasUriAsync(targetContainerClient);
-
-            // DocumentTranslationInput を作成（コンテナ全体を対象）
-            var input = new DocumentTranslationInput(sourceContainerUri, targetContainerUri, targetLanguage);
             
+            var sourceContainerUri = sourceContainerClient.Uri;
+            var targetContainerUri = targetContainerClient.Uri;
+
+            // DocumentTranslationInput を作成（Managed Identity 認証を使用）
+            var translationSource = new TranslationSource(sourceContainerUri);
             if (!string.IsNullOrEmpty(sourceLanguage))
             {
-                input.Source.LanguageCode = sourceLanguage;
+                translationSource.LanguageCode = sourceLanguage;
             }
+
+            var translationTarget = new TranslationTarget(targetContainerUri, targetLanguage);
+
+            var input = new DocumentTranslationInput(translationSource, new List<TranslationTarget> { translationTarget });
 
             _logger.LogInformation(
                 "翻訳ジョブを開始します。ソース: {SourceContainer}, ターゲット: {TargetContainer}, ファイル: {FileName}",
