@@ -3,16 +3,16 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using WebApp.Models;
 using WebApp.Services;
 
-namespace WebApp.Pages.GPT;
+namespace WebApp.Pages.OCR;
 
-public class IndexModel : PageModel
+public class GPTModel : PageModel
 {
     private readonly IGptVisionService _visionService;
-    private readonly ILogger<IndexModel> _logger;
+    private readonly ILogger<GPTModel> _logger;
 
-    public IndexModel(
+    public GPTModel(
         IGptVisionService visionService,
-        ILogger<IndexModel> logger)
+        ILogger<GPTModel> logger)
     {
         _visionService = visionService;
         _logger = logger;

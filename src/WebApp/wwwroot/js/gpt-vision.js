@@ -134,7 +134,7 @@ document.addEventListener('DOMContentLoaded', function () {
             formData.append('__RequestVerificationToken', token);
 
             // サーバーにアップロード
-            const response = await fetch('/GPT?handler=Extract', {
+            const response = await fetch('/OCR/GPT?handler=Extract', {
                 method: 'POST',
                 body: formData
             });

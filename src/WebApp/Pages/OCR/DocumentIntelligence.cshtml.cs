@@ -4,12 +4,12 @@ using WebApp.Services;
 
 namespace WebApp.Pages.OCR;
 
-public class IndexModel : PageModel
+public class DocumentIntelligenceModel : PageModel
 {
     private readonly IOcrService _ocrService;
-    private readonly ILogger<IndexModel> _logger;
+    private readonly ILogger<DocumentIntelligenceModel> _logger;
 
-    public IndexModel(IOcrService ocrService, ILogger<IndexModel> logger)
+    public DocumentIntelligenceModel(IOcrService ocrService, ILogger<DocumentIntelligenceModel> logger)
     {
         _ocrService = ocrService;
         _logger = logger;

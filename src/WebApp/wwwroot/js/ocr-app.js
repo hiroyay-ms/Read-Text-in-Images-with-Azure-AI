@@ -127,7 +127,7 @@ document.addEventListener('DOMContentLoaded', function () {
             formData.append('__RequestVerificationToken', token);
 
             // サーバーにアップロード
-            const response = await fetch('/OCR?handler=Upload', {
+            const response = await fetch('/OCR/DocumentIntelligence?handler=Upload', {
                 method: 'POST',
                 body: formData
             });

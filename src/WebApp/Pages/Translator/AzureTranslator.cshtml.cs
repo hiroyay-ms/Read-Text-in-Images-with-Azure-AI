@@ -4,12 +4,12 @@ using WebApp.Services;
 
 namespace WebApp.Pages.Translator;
 
-public class IndexModel : PageModel
+public class AzureTranslatorModel : PageModel
 {
     private readonly ITranslatorService _translatorService;
-    private readonly ILogger<IndexModel> _logger;
+    private readonly ILogger<AzureTranslatorModel> _logger;
 
-    public IndexModel(ITranslatorService translatorService, ILogger<IndexModel> logger)
+    public AzureTranslatorModel(ITranslatorService translatorService, ILogger<AzureTranslatorModel> logger)
     {
         _translatorService = translatorService;
         _logger = logger;
