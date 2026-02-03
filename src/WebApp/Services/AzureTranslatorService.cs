@@ -154,6 +154,11 @@ public class AzureTranslatorService : ITranslatorService
             // Translator リソースの Managed Identity が Storage にアクセスするため、SAS トークンは不要
             var targetContainerClient = _blobServiceClient.GetBlobContainerClient(_targetContainerName);
             
+            // 翻訳前にターゲットファイルが存在する場合は削除（TargetFileAlreadyExists エラー対策）
+            var targetBlobClient = targetContainerClient.GetBlobClient(targetFileName);
+            await targetBlobClient.DeleteIfExistsAsync();
+            _logger.LogInformation("ターゲットファイルの事前クリーンアップ完了: {TargetFileName}", targetFileName);
+
             var sourceContainerUri = sourceContainerClient.Uri;
             var targetContainerUri = targetContainerClient.Uri;
 
