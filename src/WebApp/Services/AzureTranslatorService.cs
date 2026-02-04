@@ -134,15 +134,21 @@ public class AzureTranslatorService : ITranslatorService
                 throw new InvalidOperationException("無効なドキュメントです");
             }
 
-            // 2. 一意のファイル名を生成
+            // 2. コンテナの初期化（クリーンアップ）
+            var sourceContainerClient = _blobServiceClient.GetBlobContainerClient(_sourceContainerName);
+            var targetContainerClient = _blobServiceClient.GetBlobContainerClient(_targetContainerName);
+            
+            await CleanupContainerAsync(sourceContainerClient, "source");
+            await CleanupContainerAsync(targetContainerClient, "target");
+
+            // 3. 一意のファイル名を生成
             var uniqueId = Guid.NewGuid().ToString();
             var fileExtension = Path.GetExtension(document.FileName);
             var sourceFileName = $"{uniqueId}{fileExtension}";
             // Document Translation API はソースファイル名をそのまま使用してターゲットに保存
             var targetFileName = sourceFileName;
 
-            // 3. ソースコンテナにドキュメントをアップロード
-            var sourceContainerClient = _blobServiceClient.GetBlobContainerClient(_sourceContainerName);
+            // 4. ソースコンテナにドキュメントをアップロード
             var sourceBlobClient = sourceContainerClient.GetBlobClient(sourceFileName);
 
             _logger.LogInformation("ドキュメントをアップロード中: {SourceFileName}", sourceFileName);
@@ -150,15 +156,8 @@ public class AzureTranslatorService : ITranslatorService
             await using var stream = document.OpenReadStream();
             await sourceBlobClient.UploadAsync(stream, overwrite: true);
 
-            // 4. Managed Identity を使用してコンテナにアクセス（ネットワーク制限環境対応）
+            // 5. Managed Identity を使用してコンテナにアクセス（ネットワーク制限環境対応）
             // Translator リソースの Managed Identity が Storage にアクセスするため、SAS トークンは不要
-            var targetContainerClient = _blobServiceClient.GetBlobContainerClient(_targetContainerName);
-            
-            // 翻訳前にターゲットファイルが存在する場合は削除（TargetFileAlreadyExists エラー対策）
-            var targetBlobClient = targetContainerClient.GetBlobClient(targetFileName);
-            await targetBlobClient.DeleteIfExistsAsync();
-            _logger.LogInformation("ターゲットファイルの事前クリーンアップ完了: {TargetFileName}", targetFileName);
-
             var sourceContainerUri = sourceContainerClient.Uri;
             var targetContainerUri = targetContainerClient.Uri;
 
@@ -181,7 +180,7 @@ public class AzureTranslatorService : ITranslatorService
 
             var operation = await _translationClient.StartTranslationAsync(input);
 
-            // 5. 翻訳完了まで同期的に待機
+            // 6. 翻訳完了まで同期的に待機
             _logger.LogInformation("翻訳完了を待機中...");
             await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(2));
 
@@ -196,7 +195,7 @@ public class AzureTranslatorService : ITranslatorService
                     $"翻訳に失敗しました: {operation.GetRawResponse().ReasonPhrase}");
             }
 
-            // 6. 翻訳済みドキュメントをダウンロード
+            // 7. 翻訳済みドキュメントをダウンロード
             var translatedBlobClient = targetContainerClient.GetBlobClient(targetFileName);
             
             // Blob が存在するまで少し待機（Azure 側の遅延対策）
@@ -219,7 +218,7 @@ public class AzureTranslatorService : ITranslatorService
             var downloadResponse = await translatedBlobClient.DownloadContentAsync();
             var translatedContent = downloadResponse.Value.Content.ToArray();
 
-            // 7. 翻訳統計情報を取得
+            // 8. 翻訳統計情報を取得
             int totalCharacters = 0;
             
             await foreach (var docStatus in operation.Value)
@@ -247,7 +246,7 @@ public class AzureTranslatorService : ITranslatorService
                 result.CharactersTranslated,
                 result.Duration.TotalSeconds);
 
-            // 8. 一時ファイルをクリーンアップ
+            // 9. 一時ファイルをクリーンアップ
             try
             {
                 await sourceBlobClient.DeleteIfExistsAsync();
@@ -472,6 +471,35 @@ public class AzureTranslatorService : ITranslatorService
         {
             _logger.LogError(ex, "コンテナ SAS URI の生成に失敗しました");
             throw;
+        }
+    }
+
+    /// <summary>
+    /// コンテナ内のすべての Blob を削除してクリーンアップします
+    /// </summary>
+    private async Task CleanupContainerAsync(BlobContainerClient containerClient, string containerType)
+    {
+        try
+        {
+            _logger.LogInformation("{ContainerType} コンテナのクリーンアップを開始: {ContainerName}", 
+                containerType, containerClient.Name);
+
+            int deletedCount = 0;
+            await foreach (var blobItem in containerClient.GetBlobsAsync())
+            {
+                var blobClient = containerClient.GetBlobClient(blobItem.Name);
+                await blobClient.DeleteIfExistsAsync();
+                deletedCount++;
+                _logger.LogDebug("Blob 削除: {BlobName}", blobItem.Name);
+            }
+
+            _logger.LogInformation("{ContainerType} コンテナのクリーンアップ完了: {DeletedCount} ファイル削除", 
+                containerType, deletedCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "{ContainerType} コンテナのクリーンアップに失敗しました", containerType);
+            // クリーンアップの失敗は翻訳処理を中断しない
         }
     }
 }
