@@ -160,14 +160,18 @@ public class PdfConverterService : IPdfConverterService
         return document;
     }
 
+    // フォントリゾルバーで使用するフォント名（一貫性を保つため定数化）
+    private const string MainFontName = "MultiLangFont";
+    private const string CodeFontName = "Consolas";
+
     /// <summary>
     /// スタイルを定義します
     /// </summary>
     private void DefineStyles(Document document)
     {
-        // 基本スタイル
+        // 基本スタイル（フォントリゾルバーと一致するフォント名を使用）
         var style = document.Styles["Normal"];
-        style!.Font.Name = "Yu Gothic";
+        style!.Font.Name = MainFontName;
         style.Font.Size = 11;
         style.ParagraphFormat.LineSpacing = 14;
         style.ParagraphFormat.LineSpacingRule = LineSpacingRule.AtLeast;
@@ -175,7 +179,7 @@ public class PdfConverterService : IPdfConverterService
 
         // 見出し1
         style = document.Styles["Heading1"];
-        style!.Font.Name = "Yu Gothic";
+        style!.Font.Name = MainFontName;
         style.Font.Size = 22;
         style.Font.Bold = true;
         style.ParagraphFormat.SpaceBefore = 12;
@@ -185,7 +189,7 @@ public class PdfConverterService : IPdfConverterService
 
         // 見出し2
         style = document.Styles["Heading2"];
-        style!.Font.Name = "Yu Gothic";
+        style!.Font.Name = MainFontName;
         style.Font.Size = 18;
         style.Font.Bold = true;
         style.ParagraphFormat.SpaceBefore = 12;
@@ -195,7 +199,7 @@ public class PdfConverterService : IPdfConverterService
 
         // 見出し3
         style = document.Styles["Heading3"];
-        style!.Font.Name = "Yu Gothic";
+        style!.Font.Name = MainFontName;
         style.Font.Size = 14;
         style.Font.Bold = true;
         style.ParagraphFormat.SpaceBefore = 10;
@@ -203,7 +207,7 @@ public class PdfConverterService : IPdfConverterService
 
         // 見出し4
         style = document.Styles["Heading4"];
-        style!.Font.Name = "Yu Gothic";
+        style!.Font.Name = MainFontName;
         style.Font.Size = 12;
         style.Font.Bold = true;
         style.ParagraphFormat.SpaceBefore = 8;
@@ -211,7 +215,7 @@ public class PdfConverterService : IPdfConverterService
 
         // コードスタイル
         style = document.Styles.AddStyle("Code", "Normal");
-        style.Font.Name = "Consolas";
+        style.Font.Name = CodeFontName;
         style.Font.Size = 9;
         style.ParagraphFormat.Shading.Color = new Color(245, 245, 245);
         style.ParagraphFormat.LeftIndent = 10;
@@ -630,12 +634,14 @@ public class PdfConverterService : IPdfConverterService
 /// <summary>
 /// 多言語対応フォントリゾルバー
 /// Windows に標準でインストールされているフォントを使用して、
-/// 日本語、中国語、韓国語、アラビア語、タイ語などの多言語に対応します。
+/// 日本語、中国語、韓国語などの多言語に対応します。
+/// PdfSharpCore が TTC ファイルを直接扱えないため、TTF を抽出して使用します。
 /// </summary>
 public class JapaneseFontResolver : IFontResolver
 {
     private static readonly Dictionary<string, byte[]?> _fontCache = new();
     private static readonly object _cacheLock = new();
+    private static string? _loadedFontPath = null;
 
     public string DefaultFontName => "MultiLangFont";
 
@@ -661,51 +667,72 @@ public class JapaneseFontResolver : IFontResolver
             {
                 fontData = LoadFontFromFile(@"C:\Windows\Fonts\cour.ttf"); // Courier New
             }
+            if (fontData == null)
+            {
+                fontData = LoadFontFromFile(@"C:\Windows\Fonts\arial.ttf"); // フォールバック
+            }
         }
         else
         {
-            // 多言語対応フォント - 優先順位順
-            // 1. Noto Sans CJK（インストールされている場合）- 最も広範な言語サポート
-            // 2. 游ゴシック/メイリオ（日本語、CJK）
-            // 3. Segoe UI（欧米言語、アラビア語、ヘブライ語などの一部）
-            // 4. Arial Unicode MS（多言語対応、古い Windows）
-            // 5. Arial（基本的な欧米言語のフォールバック）
-            
-            var fontPaths = new[]
+            // 日本語対応フォント - TTF ファイルを優先（TTC より確実）
+            var fontPaths = new (string path, bool isTtc, int ttcIndex)[]
             {
-                // Noto Sans CJK（多言語対応、インストールされている場合）
-                (@"C:\Windows\Fonts\NotoSansCJKjp-Regular.otf", false),
-                (@"C:\Windows\Fonts\NotoSansJP-Regular.otf", false),
-                (@"C:\Windows\Fonts\NotoSansCJK-Regular.ttc", true),
+                // 1. TTF ファイル（最も確実）
+                (@"C:\Windows\Fonts\msgothic.ttf", false, 0),   // MS Gothic TTF版
+                (@"C:\Windows\Fonts\meiryo.ttf", false, 0),     // メイリオ TTF版
+                (@"C:\Windows\Fonts\yugothic.ttf", false, 0),   // 游ゴシック TTF版
+                (@"C:\Windows\Fonts\arial.ttf", false, 0),      // Arial（フォールバック）
                 
-                // 日本語フォント（CJK 対応）
-                (@"C:\Windows\Fonts\YuGothR.ttc", true),   // 游ゴシック Regular
-                (@"C:\Windows\Fonts\YuGothM.ttc", true),   // 游ゴシック Medium
-                (@"C:\Windows\Fonts\meiryo.ttc", true),    // メイリオ
-                (@"C:\Windows\Fonts\msgothic.ttc", true),  // MS Gothic
+                // 2. TTC ファイル（TTF がない場合）
+                (@"C:\Windows\Fonts\msgothic.ttc", true, 0),    // MS Gothic
+                (@"C:\Windows\Fonts\meiryo.ttc", true, 0),      // メイリオ
+                (@"C:\Windows\Fonts\YuGothR.ttc", true, 0),     // 游ゴシック Regular
+                (@"C:\Windows\Fonts\YuGothM.ttc", true, 0),     // 游ゴシック Medium
                 
-                // 多言語対応フォント
-                (@"C:\Windows\Fonts\seguisym.ttf", false), // Segoe UI Symbol
-                (@"C:\Windows\Fonts\arialuni.ttf", false), // Arial Unicode MS（多言語）
-                
-                // フォールバック
-                (@"C:\Windows\Fonts\arial.ttf", false),    // Arial
+                // 3. その他の多言語フォント
+                (@"C:\Windows\Fonts\seguisym.ttf", false, 0),   // Segoe UI Symbol
+                (@"C:\Windows\Fonts\arialuni.ttf", false, 0),   // Arial Unicode MS
             };
 
-            foreach (var (path, isTtc) in fontPaths)
+            foreach (var (path, isTtc, ttcIndex) in fontPaths)
             {
-                if (isTtc)
+                if (!File.Exists(path))
                 {
-                    fontData = LoadFontFromTtc(path, 0);
+                    continue;
                 }
-                else
+
+                try
                 {
-                    fontData = LoadFontFromFile(path);
+                    if (isTtc)
+                    {
+                        fontData = LoadFontFromTtc(path, ttcIndex);
+                    }
+                    else
+                    {
+                        fontData = LoadFontFromFile(path);
+                    }
+                    
+                    if (fontData != null && fontData.Length > 0)
+                    {
+                        _loadedFontPath = path;
+                        System.Diagnostics.Debug.WriteLine($"[FontResolver] フォント読み込み成功: {path} ({fontData.Length} bytes)");
+                        break;
+                    }
                 }
-                
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[FontResolver] フォント読み込み失敗: {path} - {ex.Message}");
+                }
+            }
+            
+            // 最終フォールバック: 何も見つからない場合は Arial を使用
+            if (fontData == null)
+            {
+                fontData = LoadFontFromFile(@"C:\Windows\Fonts\arial.ttf");
                 if (fontData != null)
                 {
-                    break;
+                    _loadedFontPath = @"C:\Windows\Fonts\arial.ttf";
+                    System.Diagnostics.Debug.WriteLine($"[FontResolver] フォールバック: arial.ttf を使用");
                 }
             }
         }
@@ -730,7 +757,27 @@ public class JapaneseFontResolver : IFontResolver
 
         try
         {
-            return File.ReadAllBytes(path);
+            var data = File.ReadAllBytes(path);
+            // 有効な TTF かどうか簡易チェック（最初の4バイト）
+            if (data.Length >= 4)
+            {
+                var tag = System.Text.Encoding.ASCII.GetString(data, 0, 4);
+                // TTF: 0x00010000 または "OTTO" (OpenType) または "true" (TrueType)
+                if (data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00)
+                {
+                    return data;
+                }
+                if (tag == "OTTO" || tag == "true")
+                {
+                    return data;
+                }
+                // TTCでないことを確認
+                if (tag != "ttcf")
+                {
+                    return data; // それでも使用を試みる
+                }
+            }
+            return data;
         }
         catch
         {
@@ -751,10 +798,19 @@ public class JapaneseFontResolver : IFontResolver
         try
         {
             var ttcData = File.ReadAllBytes(path);
-            return ExtractTtfFromTtc(ttcData, fontIndex);
+            var ttfData = ExtractTtfFromTtc(ttcData, fontIndex);
+            
+            if (ttfData != null && ttfData.Length > 0)
+            {
+                System.Diagnostics.Debug.WriteLine($"[FontResolver] TTC から TTF 抽出成功: {path} index={fontIndex} ({ttfData.Length} bytes)");
+                return ttfData;
+            }
+            
+            return null;
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[FontResolver] TTC 読み込みエラー: {path} - {ex.Message}");
             return null;
         }
     }
@@ -767,7 +823,6 @@ public class JapaneseFontResolver : IFontResolver
         try
         {
             // TTC ヘッダーを読み込み
-            // https://docs.microsoft.com/en-us/typography/opentype/spec/otff
             if (ttcData.Length < 12)
             {
                 return null;
@@ -777,7 +832,7 @@ public class JapaneseFontResolver : IFontResolver
             var tag = System.Text.Encoding.ASCII.GetString(ttcData, 0, 4);
             if (tag != "ttcf")
             {
-                // TTC ではなく TTF の可能性
+                // TTC ではなく TTF の可能性 - そのまま返す
                 return ttcData;
             }
 
@@ -794,8 +849,9 @@ public class JapaneseFontResolver : IFontResolver
             // TTF データを構築
             return BuildTtfFromOffset(ttcData, (int)offsetTableOffset);
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[FontResolver] TTF 抽出エラー: {ex.Message}");
             return null;
         }
     }
