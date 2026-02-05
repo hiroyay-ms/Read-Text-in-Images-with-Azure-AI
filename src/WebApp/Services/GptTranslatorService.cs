@@ -376,22 +376,22 @@ public class GptTranslatorService : IGptTranslatorService
                     info.PageNumber, info.Description, info.Url);
             }
 
-            // 4. Markdown 内の適切な位置に画像を挿入
-            var markdownWithImages = InsertImagesIntoMarkdown(extractedMarkdown, imageInfos);
+            // 4. Markdown 内の適切な位置にプレースホルダーを挿入し、マッピングを取得
+            var (markdownWithPlaceholders, placeholderMapping) = InsertImagePlaceholdersIntoMarkdown(extractedMarkdown, imageInfos);
             
-            // 挿入後の図参照をログ出力
-            var replacedPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithImages, @"!\[.*?\]\([^)]+\)");
-            _logger.LogInformation("挿入後の図参照パターン数: {Count}", replacedPatterns.Count);
-            foreach (System.Text.RegularExpressions.Match match in replacedPatterns)
+            // 挿入後のプレースホルダーをログ出力
+            var placeholderPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithPlaceholders, @"\[\[IMG_PLACEHOLDER_\d+\]\]");
+            _logger.LogInformation("挿入後のプレースホルダー数: {Count}", placeholderPatterns.Count);
+            foreach (System.Text.RegularExpressions.Match match in placeholderPatterns)
             {
-                _logger.LogInformation("挿入後の図参照: {Pattern}", match.Value);
+                _logger.LogInformation("プレースホルダー: {Pattern}", match.Value);
             }
 
-            // 5. GPT-4o で翻訳（Markdown 形式を保持）
+            // 5. GPT-4o で翻訳（プレースホルダーを保持）
             _logger.LogInformation("GPT-4o で翻訳中...");
 
             var translationResult = await TranslateMarkdownAsync(
-                markdownWithImages,
+                markdownWithPlaceholders,
                 targetLanguage,
                 options,
                 cancellationToken);
@@ -401,9 +401,20 @@ public class GptTranslatorService : IGptTranslatorService
                 return translationResult;
             }
 
-            // 6. 翻訳結果を Blob Storage に保存
+            // 6. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
+            var translatedTextWithImages = ReplacePlaceholdersWithImages(translationResult.TranslatedText, placeholderMapping);
+            
+            // 置換後の画像参照をログ出力
+            var finalImagePatterns = System.Text.RegularExpressions.Regex.Matches(translatedTextWithImages, @"!\[.*?\]\([^)]+\)");
+            _logger.LogInformation("最終的な画像参照数: {Count}", finalImagePatterns.Count);
+            foreach (System.Text.RegularExpressions.Match match in finalImagePatterns)
+            {
+                _logger.LogInformation("最終画像参照: {Pattern}", match.Value);
+            }
+
+            // 7. 翻訳結果を Blob Storage に保存
             var blobName = $"{documentId}_{targetLanguage}_{timestamp}.md";
-            var blobUrl = await SaveTranslationResultAsync(blobName, translationResult.TranslatedText, cancellationToken);
+            var blobUrl = await SaveTranslationResultAsync(blobName, translatedTextWithImages, cancellationToken);
 
             var completedTime = DateTime.UtcNow;
 
@@ -414,8 +425,8 @@ public class GptTranslatorService : IGptTranslatorService
 
             return GptTranslationResult.Success(
                 originalFileName: document.FileName,
-                originalText: markdownWithImages,
-                translatedText: translationResult.TranslatedText,
+                originalText: markdownWithPlaceholders,
+                translatedText: translatedTextWithImages,
                 sourceLanguage: options.SourceLanguage ?? "auto",
                 targetLanguage: targetLanguage,
                 blobName: blobName,
@@ -771,10 +782,288 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     /// <summary>
-    /// Markdown 内のページ区切りを検出し、各ページの末尾に対応する画像を挿入します
-    /// Document Intelligence の Markdown 出力には、ページ区切りとして "<!-- PageBreak -->" や
-    /// "---"（水平線）が含まれることがあります
+    /// Markdown 内の適切な位置にプレースホルダーを挿入し、プレースホルダーと画像URLのマッピングを返します
+    /// プレースホルダー形式: [[IMG_PLACEHOLDER_001]]
     /// </summary>
+    private (string MarkdownWithPlaceholders, Dictionary<string, string> PlaceholderMapping) InsertImagePlaceholdersIntoMarkdown(
+        string markdown, 
+        List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+
+        if (imageInfos == null || imageInfos.Count == 0)
+        {
+            _logger.LogInformation("挿入する画像がありません");
+            return (markdown, placeholderMapping);
+        }
+
+        _logger.LogInformation("Markdown に {Count} 件の画像プレースホルダーを挿入します", imageInfos.Count);
+
+        // 各画像にプレースホルダーを割り当て
+        for (int i = 0; i < imageInfos.Count; i++)
+        {
+            var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
+            var imageMarkdown = $"![{imageInfos[i].Description}]({imageInfos[i].Url})";
+            placeholderMapping[placeholder] = imageMarkdown;
+            
+            _logger.LogInformation("プレースホルダー割り当て: {Placeholder} -> {ImageMarkdown}", 
+                placeholder, $"![{imageInfos[i].Description}](...)");
+        }
+
+        // ページごとに画像をグループ化
+        var imagesByPage = imageInfos
+            .Select((img, idx) => new { Image = img, Index = idx })
+            .GroupBy(x => x.Image.PageNumber)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Image.IndexInPage).ToList());
+
+        _logger.LogInformation("画像のページ分布: {Distribution}", 
+            string.Join(", ", imagesByPage.Select(kvp => $"ページ{kvp.Key}:{kvp.Value.Count}件")));
+
+        // Document Intelligence の Markdown からページ区切りを検出
+        var pageBreakPatterns = new[] 
+        { 
+            "<!-- PageBreak -->",
+            "<!-- PageNumber=",
+            "\n---\n",
+            "\n***\n",
+            "\n___\n"
+        };
+
+        // ページ区切りの位置を検出
+        var pageBreakPositions = new List<(int Position, int PageEndNumber)>();
+        var currentPosition = 0;
+        var pageNumber = 1;
+
+        while (currentPosition < markdown.Length)
+        {
+            var nearestBreak = -1;
+            var nearestPattern = "";
+
+            foreach (var pattern in pageBreakPatterns)
+            {
+                var pos = markdown.IndexOf(pattern, currentPosition, StringComparison.OrdinalIgnoreCase);
+                if (pos >= 0 && (nearestBreak == -1 || pos < nearestBreak))
+                {
+                    nearestBreak = pos;
+                    nearestPattern = pattern;
+                }
+            }
+
+            if (nearestBreak >= 0)
+            {
+                var insertPosition = nearestBreak + nearestPattern.Length;
+                pageBreakPositions.Add((insertPosition, pageNumber));
+                pageNumber++;
+                currentPosition = insertPosition;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // ページ区切りが見つからない場合は、見出しベースまたは末尾に配置
+        if (pageBreakPositions.Count == 0)
+        {
+            _logger.LogInformation("ページ区切りが見つからないため、見出しベースでプレースホルダーを配置します");
+            return InsertPlaceholdersAtHeadings(markdown, imageInfos, placeholderMapping);
+        }
+
+        // 後ろから挿入していく
+        var sb = new System.Text.StringBuilder(markdown);
+        var sortedBreaks = pageBreakPositions.OrderByDescending(b => b.Position).ToList();
+
+        foreach (var (position, pageEndNumber) in sortedBreaks)
+        {
+            if (imagesByPage.TryGetValue(pageEndNumber, out var pageImageData) && pageImageData.Count > 0)
+            {
+                var placeholderSection = new System.Text.StringBuilder();
+                placeholderSection.AppendLine();
+                placeholderSection.AppendLine();
+                
+                foreach (var item in pageImageData)
+                {
+                    var placeholder = $"[[IMG_PLACEHOLDER_{item.Index + 1:D3}]]";
+                    placeholderSection.AppendLine(placeholder);
+                    placeholderSection.AppendLine();
+                }
+
+                sb.Insert(position, placeholderSection.ToString());
+                _logger.LogInformation("ページ {Page} のプレースホルダー {Count} 件を位置 {Position} に挿入しました", 
+                    pageEndNumber, pageImageData.Count, position);
+            }
+        }
+
+        // 最後のページの画像を末尾に追加
+        var maxPageWithBreak = pageBreakPositions.Count > 0 ? pageBreakPositions.Max(b => b.PageEndNumber) : 0;
+        var remainingPages = imagesByPage.Keys.Where(p => p > maxPageWithBreak).OrderBy(p => p);
+
+        foreach (var page in remainingPages)
+        {
+            if (imagesByPage.TryGetValue(page, out var pageImageData) && pageImageData.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine();
+                
+                foreach (var item in pageImageData)
+                {
+                    var placeholder = $"[[IMG_PLACEHOLDER_{item.Index + 1:D3}]]";
+                    sb.AppendLine(placeholder);
+                    sb.AppendLine();
+                }
+
+                _logger.LogInformation("ページ {Page} のプレースホルダー {Count} 件を末尾に追加しました", page, pageImageData.Count);
+            }
+        }
+
+        return (sb.ToString(), placeholderMapping);
+    }
+
+    /// <summary>
+    /// ページ区切りが見つからない場合、見出しの位置を基準にプレースホルダーを配置します
+    /// </summary>
+    private (string MarkdownWithPlaceholders, Dictionary<string, string> PlaceholderMapping) InsertPlaceholdersAtHeadings(
+        string markdown, 
+        List<ExtractedImageInfo> imageInfos,
+        Dictionary<string, string> placeholderMapping)
+    {
+        // 見出し（#で始まる行）の位置を検出
+        var headingPattern = new System.Text.RegularExpressions.Regex(@"^(#{1,6})\s+", 
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        var headings = headingPattern.Matches(markdown);
+
+        if (headings.Count == 0)
+        {
+            _logger.LogInformation("見出しが見つからないため、プレースホルダーを末尾に追加します");
+            return AppendPlaceholdersAtEnd(markdown, imageInfos, placeholderMapping);
+        }
+
+        _logger.LogInformation("見出し数: {Count}, 画像数: {ImageCount}", headings.Count, imageInfos.Count);
+
+        var headingPositions = headings.Cast<System.Text.RegularExpressions.Match>()
+            .Select(m => m.Index)
+            .ToList();
+
+        var sb = new System.Text.StringBuilder();
+        var lastPosition = 0;
+        var imageIndex = 0;
+        var imagesPerSection = Math.Max(1, (int)Math.Ceiling((double)imageInfos.Count / headingPositions.Count));
+
+        for (int i = 0; i < headingPositions.Count; i++)
+        {
+            var headingPos = headingPositions[i];
+            sb.Append(markdown.Substring(lastPosition, headingPos - lastPosition));
+            
+            var sectionImages = imageInfos.Skip(imageIndex).Take(imagesPerSection).ToList();
+            if (sectionImages.Count > 0 && i > 0)
+            {
+                sb.AppendLine();
+                for (int j = 0; j < sectionImages.Count; j++)
+                {
+                    var placeholder = $"[[IMG_PLACEHOLDER_{imageIndex + j + 1:D3}]]";
+                    sb.AppendLine(placeholder);
+                    sb.AppendLine();
+                }
+                imageIndex += sectionImages.Count;
+            }
+            
+            lastPosition = headingPos;
+        }
+
+        sb.Append(markdown.Substring(lastPosition));
+
+        // 残りのプレースホルダーを末尾に追加
+        var remainingCount = imageInfos.Count - imageIndex;
+        if (remainingCount > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine();
+            for (int i = imageIndex; i < imageInfos.Count; i++)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
+                sb.AppendLine(placeholder);
+                sb.AppendLine();
+            }
+            _logger.LogInformation("残りのプレースホルダー {Count} 件を末尾に追加しました", remainingCount);
+        }
+
+        return (sb.ToString(), placeholderMapping);
+    }
+
+    /// <summary>
+    /// プレースホルダーを末尾に追加します（フォールバック）
+    /// </summary>
+    private (string MarkdownWithPlaceholders, Dictionary<string, string> PlaceholderMapping) AppendPlaceholdersAtEnd(
+        string markdown, 
+        List<ExtractedImageInfo> imageInfos,
+        Dictionary<string, string> placeholderMapping)
+    {
+        var sb = new System.Text.StringBuilder(markdown);
+        sb.AppendLine();
+        sb.AppendLine();
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("## 抽出された画像");
+        sb.AppendLine();
+
+        for (int i = 0; i < imageInfos.Count; i++)
+        {
+            var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
+            sb.AppendLine($"### {imageInfos[i].Description}");
+            sb.AppendLine();
+            sb.AppendLine(placeholder);
+            sb.AppendLine();
+        }
+
+        _logger.LogInformation("Markdown の末尾に {Count} 件のプレースホルダーを追加しました", imageInfos.Count);
+        return (sb.ToString(), placeholderMapping);
+    }
+
+    /// <summary>
+    /// 翻訳後のテキストでプレースホルダーを実際の画像参照に置換します
+    /// </summary>
+    private string ReplacePlaceholdersWithImages(string translatedText, Dictionary<string, string> placeholderMapping)
+    {
+        if (placeholderMapping == null || placeholderMapping.Count == 0)
+        {
+            return translatedText;
+        }
+
+        var result = translatedText;
+        var replacedCount = 0;
+        var missingCount = 0;
+
+        foreach (var kvp in placeholderMapping)
+        {
+            var placeholder = kvp.Key;
+            var imageMarkdown = kvp.Value;
+
+            if (result.Contains(placeholder))
+            {
+                result = result.Replace(placeholder, imageMarkdown);
+                replacedCount++;
+                _logger.LogInformation("プレースホルダー置換: {Placeholder} -> 画像参照", placeholder);
+            }
+            else
+            {
+                missingCount++;
+                _logger.LogWarning("プレースホルダーが見つかりません（翻訳時に失われた可能性）: {Placeholder}", placeholder);
+                
+                // 失われたプレースホルダーの画像は末尾に追加
+                result += $"\n\n{imageMarkdown}\n";
+                _logger.LogInformation("失われたプレースホルダーの画像を末尾に追加: {Placeholder}", placeholder);
+            }
+        }
+
+        _logger.LogInformation("プレースホルダー置換完了: 成功={Replaced}, 失われた={Missing}", replacedCount, missingCount);
+        return result;
+    }
+
+    /// <summary>
+    /// Markdown 内のページ区切りを検出し、各ページの末尾に対応する画像を挿入します
+    /// （後方互換性のため残しています）
+    /// </summary>
+    [Obsolete("Use InsertImagePlaceholdersIntoMarkdown instead")]
     private string InsertImagesIntoMarkdown(string markdown, List<ExtractedImageInfo> imageInfos)
     {
         if (imageInfos == null || imageInfos.Count == 0)
@@ -1084,8 +1373,10 @@ public class GptTranslatorService : IGptTranslatorService
 重要な追加指示:
 - 入力は Markdown 形式です。Markdown の構造（見出し、リスト、表、コードブロック）をそのまま保持してください
 - 画像参照 ![...](URL) は翻訳せず、そのまま保持してください
+- [[IMG_PLACEHOLDER_XXX]] 形式のプレースホルダーは絶対に変更・削除せず、そのまま出力してください。これらは翻訳後に画像に置換されます
 - <figure> タグ内の構造も保持してください
-- HTML タグがある場合は構造を保持してください";
+- HTML タグがある場合は構造を保持してください
+- プレースホルダーは翻訳対象外です。元の位置に必ず残してください";
         }
 
         // 長文の場合は分割翻訳
