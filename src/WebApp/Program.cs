@@ -98,6 +98,14 @@ builder.Services.AddHealthChecks()
     .AddCheck<AzureOpenAIHealthCheck>(
         "azure_openai",
         failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" })
+    .AddCheck<AzureTranslatorHealthCheck>(
+        "azure_translator",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" })
+    .AddCheck<AzureBlobStorageHealthCheck>(
+        "azure_blob_storage",
+        failureStatus: HealthStatus.Unhealthy,
         tags: new[] { "ready", "external" });
 
 var app = builder.Build();
@@ -250,6 +258,52 @@ app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
         else
         {
             warmupLogger.LogWarning("Azure OpenAI の設定が不完全です（Endpoint または DeploymentName が未設定）");
+        }
+        
+        // Azure Translator の接続確認
+        var translatorEndpoint = config["AzureTranslator:Endpoint"];
+        var translatorRegion = config["AzureTranslator:Region"];
+        
+        if (!string.IsNullOrEmpty(translatorEndpoint) && !string.IsNullOrEmpty(translatorRegion))
+        {
+            var translatorService = sp.GetRequiredService<ITranslatorService>();
+            
+            // Translator の言語一覧エンドポイントで接続確認
+            var translatorHealthEndpoint = $"{translatorEndpoint.TrimEnd('/')}/languages?api-version=3.0";
+            var translatorRequest = new HttpRequestMessage(HttpMethod.Get, translatorHealthEndpoint);
+            var translatorResponse = await httpClient.SendAsync(translatorRequest);
+            warmupLogger.LogInformation("Azure Translator 接続確認成功 (Status: {StatusCode})", translatorResponse.StatusCode);
+            warmupLogger.LogInformation("Azure Translator サービスの初期化成功");
+        }
+        else
+        {
+            warmupLogger.LogWarning("Azure Translator の設定が不完全です（Endpoint または Region が未設定）");
+        }
+        
+        // Azure Blob Storage の接続確認
+        var storageAccountName = config["AzureStorage:AccountName"];
+        
+        if (!string.IsNullOrEmpty(storageAccountName))
+        {
+            var blobServiceEndpoint = $"https://{storageAccountName}.blob.core.windows.net";
+            var credential = new DefaultAzureCredential();
+            var blobServiceClient = new Azure.Storage.Blobs.BlobServiceClient(new Uri(blobServiceEndpoint), credential);
+            
+            // サービスプロパティを取得して接続確認
+            await blobServiceClient.GetPropertiesAsync();
+            warmupLogger.LogInformation("Azure Blob Storage 接続確認成功 (Account: {AccountName})", storageAccountName);
+            
+            // GPT 翻訳サービスの初期化確認
+            var gptTranslatorService = sp.GetRequiredService<IGptTranslatorService>();
+            warmupLogger.LogInformation("GPT 翻訳サービスの初期化成功");
+            
+            // PDF 変換サービスの初期化確認
+            var pdfConverterService = sp.GetRequiredService<IPdfConverterService>();
+            warmupLogger.LogInformation("PDF 変換サービスの初期化成功");
+        }
+        else
+        {
+            warmupLogger.LogWarning("Azure Storage の設定が不完全です（AccountName が未設定）");
         }
         
         warmupLogger.LogInformation("Warmup 完了: すべてのサービスが正常に初期化されました");

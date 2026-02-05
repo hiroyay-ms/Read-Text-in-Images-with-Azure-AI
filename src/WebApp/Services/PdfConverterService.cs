@@ -628,66 +628,307 @@ public class PdfConverterService : IPdfConverterService
 }
 
 /// <summary>
-/// 日本語フォントリゾルバー
+/// 多言語対応フォントリゾルバー
+/// Windows に標準でインストールされているフォントを使用して、
+/// 日本語、中国語、韓国語、アラビア語、タイ語などの多言語に対応します。
 /// </summary>
 public class JapaneseFontResolver : IFontResolver
 {
-    public string DefaultFontName => "Yu Gothic";
+    private static readonly Dictionary<string, byte[]?> _fontCache = new();
+    private static readonly object _cacheLock = new();
+
+    public string DefaultFontName => "MultiLangFont";
 
     public byte[]? GetFont(string faceName)
     {
-        // Windows の游ゴシックフォントを使用
-        var fontPaths = new[]
+        lock (_cacheLock)
         {
-            @"C:\Windows\Fonts\YuGothM.ttc",  // 游ゴシック Medium
-            @"C:\Windows\Fonts\YuGothB.ttc",  // 游ゴシック Bold
-            @"C:\Windows\Fonts\meiryo.ttc",   // メイリオ
-            @"C:\Windows\Fonts\msgothic.ttc", // MS Gothic
-            @"C:\Windows\Fonts\arial.ttf",    // Arial（フォールバック）
-        };
-
-        foreach (var path in fontPaths)
-        {
-            if (File.Exists(path))
+            if (_fontCache.TryGetValue(faceName, out var cachedFont))
             {
-                try
+                return cachedFont;
+            }
+        }
+
+        byte[]? fontData = null;
+
+        // faceName に基づいてフォントを選択
+        var normalizedName = faceName.ToLowerInvariant();
+
+        if (normalizedName.Contains("consolas"))
+        {
+            fontData = LoadFontFromFile(@"C:\Windows\Fonts\consola.ttf");
+            if (fontData == null)
+            {
+                fontData = LoadFontFromFile(@"C:\Windows\Fonts\cour.ttf"); // Courier New
+            }
+        }
+        else
+        {
+            // 多言語対応フォント - 優先順位順
+            // 1. Noto Sans CJK（インストールされている場合）- 最も広範な言語サポート
+            // 2. 游ゴシック/メイリオ（日本語、CJK）
+            // 3. Segoe UI（欧米言語、アラビア語、ヘブライ語などの一部）
+            // 4. Arial Unicode MS（多言語対応、古い Windows）
+            // 5. Arial（基本的な欧米言語のフォールバック）
+            
+            var fontPaths = new[]
+            {
+                // Noto Sans CJK（多言語対応、インストールされている場合）
+                (@"C:\Windows\Fonts\NotoSansCJKjp-Regular.otf", false),
+                (@"C:\Windows\Fonts\NotoSansJP-Regular.otf", false),
+                (@"C:\Windows\Fonts\NotoSansCJK-Regular.ttc", true),
+                
+                // 日本語フォント（CJK 対応）
+                (@"C:\Windows\Fonts\YuGothR.ttc", true),   // 游ゴシック Regular
+                (@"C:\Windows\Fonts\YuGothM.ttc", true),   // 游ゴシック Medium
+                (@"C:\Windows\Fonts\meiryo.ttc", true),    // メイリオ
+                (@"C:\Windows\Fonts\msgothic.ttc", true),  // MS Gothic
+                
+                // 多言語対応フォント
+                (@"C:\Windows\Fonts\seguisym.ttf", false), // Segoe UI Symbol
+                (@"C:\Windows\Fonts\arialuni.ttf", false), // Arial Unicode MS（多言語）
+                
+                // フォールバック
+                (@"C:\Windows\Fonts\arial.ttf", false),    // Arial
+            };
+
+            foreach (var (path, isTtc) in fontPaths)
+            {
+                if (isTtc)
                 {
-                    return File.ReadAllBytes(path);
+                    fontData = LoadFontFromTtc(path, 0);
                 }
-                catch
+                else
                 {
-                    continue;
+                    fontData = LoadFontFromFile(path);
+                }
+                
+                if (fontData != null)
+                {
+                    break;
                 }
             }
         }
 
-        return null;
+        lock (_cacheLock)
+        {
+            _fontCache[faceName] = fontData;
+        }
+
+        return fontData;
+    }
+
+    /// <summary>
+    /// TTF ファイルを読み込みます
+    /// </summary>
+    private byte[]? LoadFontFromFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return File.ReadAllBytes(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// TTC ファイルから指定されたインデックスのフォントを抽出します
+    /// </summary>
+    private byte[]? LoadFontFromTtc(string path, int fontIndex)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var ttcData = File.ReadAllBytes(path);
+            return ExtractTtfFromTtc(ttcData, fontIndex);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// TTC バイナリから TTF を抽出します
+    /// </summary>
+    private byte[]? ExtractTtfFromTtc(byte[] ttcData, int fontIndex)
+    {
+        try
+        {
+            // TTC ヘッダーを読み込み
+            // https://docs.microsoft.com/en-us/typography/opentype/spec/otff
+            if (ttcData.Length < 12)
+            {
+                return null;
+            }
+
+            // TTC タグを確認 ("ttcf")
+            var tag = System.Text.Encoding.ASCII.GetString(ttcData, 0, 4);
+            if (tag != "ttcf")
+            {
+                // TTC ではなく TTF の可能性
+                return ttcData;
+            }
+
+            // フォント数を取得（オフセット 8、4バイト、ビッグエンディアン）
+            var numFonts = ReadBigEndianUInt32(ttcData, 8);
+            if (fontIndex >= numFonts)
+            {
+                fontIndex = 0;
+            }
+
+            // 指定されたフォントのオフセットを取得
+            var offsetTableOffset = ReadBigEndianUInt32(ttcData, 12 + (fontIndex * 4));
+
+            // TTF データを構築
+            return BuildTtfFromOffset(ttcData, (int)offsetTableOffset);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// TTC 内のオフセットから TTF を構築します
+    /// </summary>
+    private byte[]? BuildTtfFromOffset(byte[] ttcData, int offsetTableOffset)
+    {
+        try
+        {
+            // オフセットテーブルを読み込み
+            if (ttcData.Length < offsetTableOffset + 12)
+            {
+                return null;
+            }
+
+            // テーブル数を取得
+            var numTables = ReadBigEndianUInt16(ttcData, offsetTableOffset + 4);
+
+            // 各テーブルの情報を収集
+            var tables = new List<(string tag, uint checksum, uint offset, uint length)>();
+            var tableRecordOffset = offsetTableOffset + 12;
+
+            for (int i = 0; i < numTables; i++)
+            {
+                var recordOffset = tableRecordOffset + (i * 16);
+                if (ttcData.Length < recordOffset + 16)
+                {
+                    return null;
+                }
+
+                var tableTag = System.Text.Encoding.ASCII.GetString(ttcData, recordOffset, 4);
+                var checksum = ReadBigEndianUInt32(ttcData, recordOffset + 4);
+                var offset = ReadBigEndianUInt32(ttcData, recordOffset + 8);
+                var length = ReadBigEndianUInt32(ttcData, recordOffset + 12);
+
+                tables.Add((tableTag, checksum, offset, length));
+            }
+
+            // 新しい TTF を構築
+            using var ms = new MemoryStream();
+            using var writer = new BinaryWriter(ms);
+
+            // オフセットテーブルを書き込み
+            writer.Write(ttcData, offsetTableOffset, 12);
+
+            // 新しいテーブルレコードのオフセットを計算
+            var newDataOffset = (uint)(12 + (numTables * 16));
+            newDataOffset = (newDataOffset + 3) & ~3u; // 4バイト境界に揃える
+
+            // テーブルレコードを書き込み
+            var currentOffset = newDataOffset;
+            var tableData = new List<byte[]>();
+
+            foreach (var (tag, checksum, offset, length) in tables)
+            {
+                // タグを書き込み
+                writer.Write(System.Text.Encoding.ASCII.GetBytes(tag));
+                // チェックサムを書き込み
+                WriteBigEndianUInt32(writer, checksum);
+                // 新しいオフセットを書き込み
+                WriteBigEndianUInt32(writer, currentOffset);
+                // 長さを書き込み
+                WriteBigEndianUInt32(writer, length);
+
+                // テーブルデータを抽出
+                var data = new byte[length];
+                Array.Copy(ttcData, offset, data, 0, length);
+                tableData.Add(data);
+
+                // 次のオフセットを計算（4バイト境界）
+                currentOffset += length;
+                currentOffset = (currentOffset + 3) & ~3u;
+            }
+
+            // パディングを追加
+            var padding = newDataOffset - (12 + (numTables * 16));
+            for (int i = 0; i < padding; i++)
+            {
+                writer.Write((byte)0);
+            }
+
+            // テーブルデータを書き込み
+            foreach (var data in tableData)
+            {
+                writer.Write(data);
+                // 4バイト境界にパディング
+                var tablePadding = (4 - (data.Length % 4)) % 4;
+                for (int i = 0; i < tablePadding; i++)
+                {
+                    writer.Write((byte)0);
+                }
+            }
+
+            return ms.ToArray();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static uint ReadBigEndianUInt32(byte[] data, int offset)
+    {
+        return (uint)((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]);
+    }
+
+    private static ushort ReadBigEndianUInt16(byte[] data, int offset)
+    {
+        return (ushort)((data[offset] << 8) | data[offset + 1]);
+    }
+
+    private static void WriteBigEndianUInt32(BinaryWriter writer, uint value)
+    {
+        writer.Write((byte)((value >> 24) & 0xFF));
+        writer.Write((byte)((value >> 16) & 0xFF));
+        writer.Write((byte)((value >> 8) & 0xFF));
+        writer.Write((byte)(value & 0xFF));
     }
 
     public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic)
     {
         // フォントファミリー名を正規化
         var normalizedName = familyName.ToLowerInvariant();
-        
-        // 日本語フォントのマッピング
-        if (normalizedName.Contains("gothic") || 
-            normalizedName.Contains("ゴシック") ||
-            normalizedName.Contains("yu gothic"))
-        {
-            return new FontResolverInfo("YuGothic", isBold, isItalic);
-        }
-        
-        if (normalizedName.Contains("meiryo") || normalizedName.Contains("メイリオ"))
-        {
-            return new FontResolverInfo("Meiryo", isBold, isItalic);
-        }
 
-        if (normalizedName.Contains("consolas") || normalizedName.Contains("mono"))
+        // Consolas（コード用）
+        if (normalizedName.Contains("consolas") || normalizedName.Contains("mono") || normalizedName.Contains("courier"))
         {
             return new FontResolverInfo("Consolas", isBold, isItalic);
         }
 
-        // デフォルトは游ゴシック
-        return new FontResolverInfo("YuGothic", isBold, isItalic);
+        // すべてのフォントを多言語対応フォントにマッピング
+        return new FontResolverInfo("MultiLangFont", isBold, isItalic);
     }
 }

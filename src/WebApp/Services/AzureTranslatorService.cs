@@ -19,11 +19,10 @@ public class AzureTranslatorService : ITranslatorService
     private readonly string _region;
 
     // サポートされている言語のキャッシュ
+    // 注: Windows フォントで正しく表示できない言語（アラビア語、ヘブライ語、タイ語、ヒンディー語など）は除外
     private static readonly Dictionary<string, string> SupportedLanguages = new()
     {
         { "af", "Afrikaans" },
-        { "ar", "Arabic" },
-        { "bn", "Bangla" },
         { "bs", "Bosnian" },
         { "bg", "Bulgarian" },
         { "ca", "Catalan" },
@@ -42,8 +41,6 @@ public class AzureTranslatorService : ITranslatorService
         { "de", "German" },
         { "el", "Greek" },
         { "ht", "Haitian Creole" },
-        { "he", "Hebrew" },
-        { "hi", "Hindi" },
         { "hu", "Hungarian" },
         { "is", "Icelandic" },
         { "id", "Indonesian" },
@@ -56,7 +53,6 @@ public class AzureTranslatorService : ITranslatorService
         { "ms", "Malay" },
         { "mt", "Maltese" },
         { "nb", "Norwegian" },
-        { "fa", "Persian" },
         { "pl", "Polish" },
         { "pt", "Portuguese" },
         { "ro", "Romanian" },
@@ -69,11 +65,9 @@ public class AzureTranslatorService : ITranslatorService
         { "es", "Spanish" },
         { "sv", "Swedish" },
         { "ty", "Tahitian" },
-        { "th", "Thai" },
         { "to", "Tongan" },
         { "tr", "Turkish" },
         { "uk", "Ukrainian" },
-        { "ur", "Urdu" },
         { "vi", "Vietnamese" },
         { "cy", "Welsh" }
     };
