@@ -350,37 +350,41 @@ public class GptTranslatorService : IGptTranslatorService
             memoryStream.Position = 0;
             var fileBytes = memoryStream.ToArray();
 
-            // ファイル形式に応じて画像を抽出
-            List<string> imageUrls;
+            // ファイル形式に応じて画像を抽出（ページ情報付き）
+            List<ExtractedImageInfo> imageInfos;
             if (fileExtension == ".pdf")
             {
-                imageUrls = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
+                imageInfos = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
             }
             else if (fileExtension == ".docx")
             {
-                imageUrls = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+                imageInfos = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
             }
             else
             {
-                imageUrls = new List<string>();
+                imageInfos = new List<ExtractedImageInfo>();
                 _logger.LogWarning("サポートされていないファイル形式です: {Extension}", fileExtension);
             }
 
-            _logger.LogInformation("画像抽出完了。保存された画像数: {Count}", imageUrls.Count);
-            foreach (var url in imageUrls)
+            // URL のリストを抽出（GptTranslationResult 用）
+            var imageUrls = imageInfos.Select(i => i.Url).ToList();
+
+            _logger.LogInformation("画像抽出完了。保存された画像数: {Count}", imageInfos.Count);
+            foreach (var info in imageInfos)
             {
-                _logger.LogInformation("保存された画像 URL: {Url}", url);
+                _logger.LogInformation("保存された画像: ページ={Page}, 説明={Description}, URL={Url}", 
+                    info.PageNumber, info.Description, info.Url);
             }
 
-            // 4. Markdown 内の図参照を Blob URL に置換（または画像を追加）
-            var markdownWithImages = InsertImagesIntoMarkdown(extractedMarkdown, imageUrls);
+            // 4. Markdown 内の適切な位置に画像を挿入
+            var markdownWithImages = InsertImagesIntoMarkdown(extractedMarkdown, imageInfos);
             
-            // 置換後の図参照をログ出力
+            // 挿入後の図参照をログ出力
             var replacedPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithImages, @"!\[.*?\]\([^)]+\)");
-            _logger.LogInformation("置換後の図参照パターン数: {Count}", replacedPatterns.Count);
+            _logger.LogInformation("挿入後の図参照パターン数: {Count}", replacedPatterns.Count);
             foreach (System.Text.RegularExpressions.Match match in replacedPatterns)
             {
-                _logger.LogInformation("置換後の図参照: {Pattern}", match.Value);
+                _logger.LogInformation("挿入後の図参照: {Pattern}", match.Value);
             }
 
             // 5. GPT-4o で翻訳（Markdown 形式を保持）
@@ -468,14 +472,15 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// PDF ファイルから画像を抽出して Blob Storage に保存します
+    /// ページ番号情報を保持して、元の位置に近い場所に画像を挿入できるようにします
     /// </summary>
-    private async Task<List<string>> ExtractImagesFromPdfAsync(
+    private async Task<List<ExtractedImageInfo>> ExtractImagesFromPdfAsync(
         byte[] pdfBytes,
         string documentId,
         string timestamp,
         CancellationToken cancellationToken)
     {
-        var imageUrls = new List<string>();
+        var imageInfos = new List<ExtractedImageInfo>();
 
         _logger.LogInformation("[PDF画像抽出] 開始: DocumentId={DocumentId}, Timestamp={Timestamp}, PDFサイズ={Size} bytes", 
             documentId, timestamp, pdfBytes.Length);
@@ -489,7 +494,7 @@ public class GptTranslatorService : IGptTranslatorService
             _logger.LogInformation("[PDF画像抽出] コンテナ準備完了: {ContainerName}", _translatedContainerName);
 
             using var pdfDocument = PdfDocument.Open(pdfBytes);
-            var imageIndex = 0;
+            var globalImageIndex = 0;
             var totalImagesFound = 0;
 
             _logger.LogInformation("[PDF画像抽出] PDF を開きました。ページ数: {PageCount}", pdfDocument.NumberOfPages);
@@ -510,72 +515,83 @@ public class GptTranslatorService : IGptTranslatorService
                     continue;
                 }
 
+                var imageIndexInPage = 0;
                 foreach (var image in images)
                 {
                     try
                     {
-                        imageIndex++;
+                        globalImageIndex++;
                         var imageBytes = image.RawBytes.ToArray();
                         
                         _logger.LogInformation("[PDF画像抽出] 画像 {Index}: RawBytes サイズ={Size} bytes, Bounds={Bounds}", 
-                            imageIndex, imageBytes.Length, image.Bounds);
+                            globalImageIndex, imageBytes.Length, image.Bounds);
                         
                         if (imageBytes.Length == 0)
                         {
-                            _logger.LogWarning("[PDF画像抽出] 画像 {Index}: データが空のためスキップ", imageIndex);
+                            _logger.LogWarning("[PDF画像抽出] 画像 {Index}: データが空のためスキップ", globalImageIndex);
                             continue;
                         }
 
                         // 画像形式を判定してファイル名を決定
                         var extension = DetermineImageExtension(imageBytes);
-                        var imageName = $"images/{documentId}_{timestamp}/image_{imageIndex:D3}{extension}";
+                        var imageName = $"images/{documentId}_{timestamp}/page{page.Number:D3}_image{imageIndexInPage + 1:D3}{extension}";
                         
-                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: 形式={Extension}, 保存先={ImageName}", 
-                            imageIndex, extension, imageName);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: ページ={Page}, 形式={Extension}, 保存先={ImageName}", 
+                            globalImageIndex, page.Number, extension, imageName);
                         
                         // Blob Storage に保存
                         var blobClient = containerClient.GetBlobClient(imageName);
                         using var imageStream = new MemoryStream(imageBytes);
                         
-                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: Blob Storage にアップロード中...", imageIndex);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: Blob Storage にアップロード中...", globalImageIndex);
                         await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
-                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: アップロード成功", imageIndex);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: アップロード成功", globalImageIndex);
 
                         // SAS トークン付き URL を生成（24時間有効）
-                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: SAS URL を生成中...", imageIndex);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: SAS URL を生成中...", globalImageIndex);
                         var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
-                        imageUrls.Add(imageUrl);
+                        
+                        imageInfos.Add(new ExtractedImageInfo
+                        {
+                            PageNumber = page.Number,
+                            IndexInPage = imageIndexInPage,
+                            Url = imageUrl,
+                            Description = $"ページ {page.Number} の画像 {imageIndexInPage + 1}"
+                        });
+                        
+                        imageIndexInPage++;
 
-                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: 完了 URL={Url}", imageIndex, imageUrl);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: 完了 URL={Url}, Page={Page}", globalImageIndex, imageUrl, page.Number);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "[PDF画像抽出] 画像 {Index}: 抽出に失敗しました", imageIndex);
+                        _logger.LogError(ex, "[PDF画像抽出] 画像 {Index}: 抽出に失敗しました", globalImageIndex);
                     }
                 }
             }
 
             _logger.LogInformation("[PDF画像抽出] 完了: 検出画像数={TotalFound}, 抽出成功数={ExtractedCount}", 
-                totalImagesFound, imageUrls.Count);
+                totalImagesFound, imageInfos.Count);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[PDF画像抽出] PDF 処理中にエラーが発生しました");
         }
 
-        return imageUrls;
+        return imageInfos;
     }
 
     /// <summary>
     /// Word (.docx) ファイルから画像を抽出して Blob Storage に保存します
+    /// Word は明示的なページ情報がないため、出現順序に基づいて擬似的にページを割り当てます
     /// </summary>
-    private async Task<List<string>> ExtractImagesFromDocxAsync(
+    private async Task<List<ExtractedImageInfo>> ExtractImagesFromDocxAsync(
         byte[] docxBytes,
         string documentId,
         string timestamp,
         CancellationToken cancellationToken)
     {
-        var imageUrls = new List<string>();
+        var imageInfos = new List<ExtractedImageInfo>();
 
         _logger.LogInformation("[Word画像抽出] 開始: DocumentId={DocumentId}, Timestamp={Timestamp}, DOCXサイズ={Size} bytes", 
             documentId, timestamp, docxBytes.Length);
@@ -594,7 +610,7 @@ public class GptTranslatorService : IGptTranslatorService
             if (wordDocument.MainDocumentPart == null)
             {
                 _logger.LogWarning("[Word画像抽出] MainDocumentPart が見つかりません。画像なしとして処理を続行します。");
-                return imageUrls;
+                return imageInfos;
             }
 
             var imageIndex = 0;
@@ -606,8 +622,12 @@ public class GptTranslatorService : IGptTranslatorService
             if (totalImagesFound == 0)
             {
                 _logger.LogInformation("[Word画像抽出] ドキュメントに埋め込み画像がありません");
-                return imageUrls;
+                return imageInfos;
             }
+
+            // Word は明示的なページ情報がないため、画像を3つごとに1ページとして扱う（目安）
+            // 実際の配置は Markdown のセクション区切りを使用して調整
+            var estimatedImagesPerPage = 3;
 
             // 埋め込み画像を取得
             foreach (var imagePart in imageParts)
@@ -615,9 +635,12 @@ public class GptTranslatorService : IGptTranslatorService
                 try
                 {
                     imageIndex++;
+                    // 推定ページ番号を計算（1から始まる）
+                    var estimatedPage = ((imageIndex - 1) / estimatedImagesPerPage) + 1;
+                    var indexInPage = (imageIndex - 1) % estimatedImagesPerPage;
                     
-                    _logger.LogInformation("[Word画像抽出] 画像 {Index}/{Total}: ContentType={ContentType}, Uri={Uri}", 
-                        imageIndex, totalImagesFound, imagePart.ContentType, imagePart.Uri);
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}/{Total}: ContentType={ContentType}, Uri={Uri}, 推定ページ={Page}", 
+                        imageIndex, totalImagesFound, imagePart.ContentType, imagePart.Uri, estimatedPage);
                     
                     using var imageStream = imagePart.GetStream();
                     using var imageMemoryStream = new MemoryStream();
@@ -650,7 +673,14 @@ public class GptTranslatorService : IGptTranslatorService
                     // SAS トークン付き URL を生成（24時間有効）
                     _logger.LogInformation("[Word画像抽出] 画像 {Index}: SAS URL を生成中...", imageIndex);
                     var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
-                    imageUrls.Add(imageUrl);
+                    
+                    imageInfos.Add(new ExtractedImageInfo
+                    {
+                        PageNumber = estimatedPage,
+                        IndexInPage = indexInPage,
+                        Url = imageUrl,
+                        Description = $"画像 {imageIndex}"
+                    });
 
                     _logger.LogInformation("[Word画像抽出] 画像 {Index}: 完了 URL={Url}", imageIndex, imageUrl);
                 }
@@ -661,14 +691,14 @@ public class GptTranslatorService : IGptTranslatorService
             }
 
             _logger.LogInformation("[Word画像抽出] 完了: 検出画像数={TotalFound}, 抽出成功数={ExtractedCount}", 
-                totalImagesFound, imageUrls.Count);
+                totalImagesFound, imageInfos.Count);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Word画像抽出] Word 処理中にエラーが発生しました");
         }
 
-        return imageUrls;
+        return imageInfos;
     }
 
     /// <summary>
@@ -741,16 +771,211 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     /// <summary>
-    /// Markdown の末尾に抽出した画像を追加します
+    /// Markdown 内のページ区切りを検出し、各ページの末尾に対応する画像を挿入します
+    /// Document Intelligence の Markdown 出力には、ページ区切りとして "<!-- PageBreak -->" や
+    /// "---"（水平線）が含まれることがあります
     /// </summary>
-    private string InsertImagesIntoMarkdown(string markdown, List<string> imageUrls)
+    private string InsertImagesIntoMarkdown(string markdown, List<ExtractedImageInfo> imageInfos)
     {
-        if (imageUrls == null || imageUrls.Count == 0)
+        if (imageInfos == null || imageInfos.Count == 0)
         {
             _logger.LogInformation("挿入する画像がありません");
             return markdown;
         }
 
+        _logger.LogInformation("Markdown に {Count} 件の画像を適切な位置に挿入します", imageInfos.Count);
+
+        // ページごとに画像をグループ化
+        var imagesByPage = imageInfos
+            .GroupBy(img => img.PageNumber)
+            .ToDictionary(g => g.Key, g => g.OrderBy(img => img.IndexInPage).ToList());
+
+        _logger.LogInformation("画像のページ分布: {Distribution}", 
+            string.Join(", ", imagesByPage.Select(kvp => $"ページ{kvp.Key}:{kvp.Value.Count}件")));
+
+        // Document Intelligence の Markdown からページ区切りを検出
+        // 一般的なパターン: "<!-- PageBreak -->", "---", "***", "___"
+        var pageBreakPatterns = new[] 
+        { 
+            "<!-- PageBreak -->",
+            "<!-- PageNumber=",  // Document Intelligence のページマーカー
+            "\n---\n",
+            "\n***\n",
+            "\n___\n"
+        };
+
+        // ページ区切りの位置を検出
+        var pageBreakPositions = new List<(int Position, int PageEndNumber)>();
+        var currentPosition = 0;
+        var pageNumber = 1;
+
+        // 各ページ区切りパターンを検索
+        while (currentPosition < markdown.Length)
+        {
+            var nearestBreak = -1;
+            var nearestPattern = "";
+
+            foreach (var pattern in pageBreakPatterns)
+            {
+                var pos = markdown.IndexOf(pattern, currentPosition, StringComparison.OrdinalIgnoreCase);
+                if (pos >= 0 && (nearestBreak == -1 || pos < nearestBreak))
+                {
+                    nearestBreak = pos;
+                    nearestPattern = pattern;
+                }
+            }
+
+            if (nearestBreak >= 0)
+            {
+                // ページ区切りの後に画像を挿入する位置を記録
+                var insertPosition = nearestBreak + nearestPattern.Length;
+                pageBreakPositions.Add((insertPosition, pageNumber));
+                
+                _logger.LogDebug("ページ区切り検出: ページ {Page}, 位置 {Position}, パターン: {Pattern}", 
+                    pageNumber, nearestBreak, nearestPattern.Trim());
+                
+                pageNumber++;
+                currentPosition = insertPosition;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        // ページ区切りが見つからない場合は、見出しの前に画像を分散配置
+        if (pageBreakPositions.Count == 0)
+        {
+            _logger.LogInformation("ページ区切りが見つからないため、見出しベースで画像を配置します");
+            return InsertImagesAtHeadings(markdown, imageInfos);
+        }
+
+        // 後ろから挿入していく（位置がずれないように）
+        var sb = new System.Text.StringBuilder(markdown);
+        var sortedBreaks = pageBreakPositions.OrderByDescending(b => b.Position).ToList();
+
+        foreach (var (position, pageEndNumber) in sortedBreaks)
+        {
+            if (imagesByPage.TryGetValue(pageEndNumber, out var pageImages) && pageImages.Count > 0)
+            {
+                var imageSection = new System.Text.StringBuilder();
+                imageSection.AppendLine();
+                imageSection.AppendLine();
+                
+                foreach (var img in pageImages)
+                {
+                    imageSection.AppendLine($"![{img.Description}]({img.Url})");
+                    imageSection.AppendLine();
+                }
+
+                sb.Insert(position, imageSection.ToString());
+                _logger.LogInformation("ページ {Page} の画像 {Count} 件を位置 {Position} に挿入しました", 
+                    pageEndNumber, pageImages.Count, position);
+            }
+        }
+
+        // 最後のページの画像（ページ区切りの後）を末尾に追加
+        var maxPageWithBreak = pageBreakPositions.Count > 0 ? pageBreakPositions.Max(b => b.PageEndNumber) : 0;
+        var remainingPages = imagesByPage.Keys.Where(p => p > maxPageWithBreak).OrderBy(p => p);
+
+        foreach (var page in remainingPages)
+        {
+            if (imagesByPage.TryGetValue(page, out var pageImages) && pageImages.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine();
+                
+                foreach (var img in pageImages)
+                {
+                    sb.AppendLine($"![{img.Description}]({img.Url})");
+                    sb.AppendLine();
+                }
+
+                _logger.LogInformation("ページ {Page} の画像 {Count} 件を末尾に追加しました", page, pageImages.Count);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// ページ区切りが見つからない場合、見出しの位置を基準に画像を配置します
+    /// </summary>
+    private string InsertImagesAtHeadings(string markdown, List<ExtractedImageInfo> imageInfos)
+    {
+        // 見出し（#で始まる行）の位置を検出
+        var headingPattern = new System.Text.RegularExpressions.Regex(@"^(#{1,6})\s+", 
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+        var headings = headingPattern.Matches(markdown);
+
+        if (headings.Count == 0)
+        {
+            // 見出しも見つからない場合は末尾に追加（従来の動作）
+            _logger.LogInformation("見出しが見つからないため、画像を末尾に追加します");
+            return AppendImagesAtEnd(markdown, imageInfos);
+        }
+
+        _logger.LogInformation("見出し数: {Count}, 画像数: {ImageCount}", headings.Count, imageInfos.Count);
+
+        // 見出しの数に基づいて画像を分散配置
+        var headingPositions = headings.Cast<System.Text.RegularExpressions.Match>()
+            .Select(m => m.Index)
+            .ToList();
+
+        // 画像をセクション（見出し間）に分散
+        var sb = new System.Text.StringBuilder();
+        var lastPosition = 0;
+        var imageIndex = 0;
+        var imagesPerSection = Math.Max(1, (int)Math.Ceiling((double)imageInfos.Count / headingPositions.Count));
+
+        for (int i = 0; i < headingPositions.Count; i++)
+        {
+            var headingPos = headingPositions[i];
+            
+            // 前の見出しから現在の見出しまでのテキストを追加
+            sb.Append(markdown.Substring(lastPosition, headingPos - lastPosition));
+            
+            // このセクションに割り当てる画像を追加（見出しの前に配置）
+            var sectionImages = imageInfos.Skip(imageIndex).Take(imagesPerSection).ToList();
+            if (sectionImages.Count > 0 && i > 0) // 最初の見出しの前には追加しない
+            {
+                sb.AppendLine();
+                foreach (var img in sectionImages)
+                {
+                    sb.AppendLine($"![{img.Description}]({img.Url})");
+                    sb.AppendLine();
+                }
+                imageIndex += sectionImages.Count;
+            }
+            
+            lastPosition = headingPos;
+        }
+
+        // 残りのテキストを追加
+        sb.Append(markdown.Substring(lastPosition));
+
+        // 残りの画像を末尾に追加
+        var remainingImages = imageInfos.Skip(imageIndex).ToList();
+        if (remainingImages.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine();
+            foreach (var img in remainingImages)
+            {
+                sb.AppendLine($"![{img.Description}]({img.Url})");
+                sb.AppendLine();
+            }
+            _logger.LogInformation("残りの画像 {Count} 件を末尾に追加しました", remainingImages.Count);
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 画像を末尾に追加します（フォールバック）
+    /// </summary>
+    private string AppendImagesAtEnd(string markdown, List<ExtractedImageInfo> imageInfos)
+    {
         var sb = new System.Text.StringBuilder(markdown);
         sb.AppendLine();
         sb.AppendLine();
@@ -759,16 +984,15 @@ public class GptTranslatorService : IGptTranslatorService
         sb.AppendLine("## 抽出された画像");
         sb.AppendLine();
 
-        for (int i = 0; i < imageUrls.Count; i++)
+        foreach (var img in imageInfos)
         {
-            sb.AppendLine($"### 画像 {i + 1}");
+            sb.AppendLine($"### {img.Description}");
             sb.AppendLine();
-            sb.AppendLine($"![画像 {i + 1}]({imageUrls[i]})");
+            sb.AppendLine($"![{img.Description}]({img.Url})");
             sb.AppendLine();
         }
 
-        _logger.LogInformation("Markdown に {Count} 件の画像を追加しました", imageUrls.Count);
-
+        _logger.LogInformation("Markdown の末尾に {Count} 件の画像を追加しました", imageInfos.Count);
         return sb.ToString();
     }
 
@@ -1026,6 +1250,36 @@ public class GptTranslatorService : IGptTranslatorService
     private string GetLanguageName(string languageCode)
     {
         return SupportedLanguages.TryGetValue(languageCode, out var name) ? name : languageCode;
+    }
+
+    #endregion
+
+    #region Inner Classes
+
+    /// <summary>
+    /// 抽出された画像の情報を保持する内部クラス
+    /// </summary>
+    private class ExtractedImageInfo
+    {
+        /// <summary>
+        /// 画像があるページ番号（1から始まる）。Word の場合は推定値。
+        /// </summary>
+        public int PageNumber { get; set; }
+
+        /// <summary>
+        /// ページ内での画像のインデックス（0から始まる）
+        /// </summary>
+        public int IndexInPage { get; set; }
+
+        /// <summary>
+        /// Blob Storage に保存された画像の URL（SAS トークン付き）
+        /// </summary>
+        public string Url { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 画像の説明（altテキスト用）
+        /// </summary>
+        public string Description { get; set; } = string.Empty;
     }
 
     #endregion
