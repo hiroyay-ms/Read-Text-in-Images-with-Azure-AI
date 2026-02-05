@@ -281,7 +281,21 @@ public class GptTranslatorService : IGptTranslatorService
 
             // レスポンスを JSON としてパース
             var responseJson = JsonDocument.Parse(operation.Value.ToStream());
-            var analyzeResult = responseJson.RootElement;
+            var rootElement = responseJson.RootElement;
+
+            // Document Intelligence v4.0 API のレスポンス構造: { "analyzeResult": { "content": "...", "figures": [...] } }
+            JsonElement analyzeResult;
+            if (rootElement.TryGetProperty("analyzeResult", out var analyzeResultElement))
+            {
+                analyzeResult = analyzeResultElement;
+                _logger.LogInformation("analyzeResult プロパティを取得しました");
+            }
+            else
+            {
+                // ルート要素自体が analyzeResult の場合（フラット構造）
+                analyzeResult = rootElement;
+                _logger.LogInformation("ルート要素を analyzeResult として使用します");
+            }
 
             // Markdown テキストを取得（図は <figure> タグで埋め込まれている）
             string extractedMarkdown;
@@ -291,7 +305,9 @@ public class GptTranslatorService : IGptTranslatorService
             }
             else
             {
-                _logger.LogWarning("Document Intelligence レスポンスに content プロパティがありません");
+                // デバッグ用: 利用可能なプロパティをログ出力
+                var availableProperties = string.Join(", ", analyzeResult.EnumerateObject().Select(p => p.Name));
+                _logger.LogWarning("Document Intelligence レスポンスに content プロパティがありません。利用可能なプロパティ: {Properties}", availableProperties);
                 return GptTranslationResult.Failure("ドキュメントの解析結果を取得できませんでした。", document.FileName);
             }
 
