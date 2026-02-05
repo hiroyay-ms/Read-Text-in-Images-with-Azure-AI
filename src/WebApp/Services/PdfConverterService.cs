@@ -1,158 +1,24 @@
 using Markdig;
-using PuppeteerSharp;
-using PuppeteerSharp.Media;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+using MigraDocCore.DocumentObjectModel;
+using MigraDocCore.DocumentObjectModel.Tables;
+using MigraDocCore.Rendering;
+using PdfSharpCore.Fonts;
+using PdfSharpCore.Pdf;
 using WebApp.Models;
-
-// 型エイリアスで名前衝突を解決
-using PuppeteerPdfOptions = PuppeteerSharp.PdfOptions;
-using AppPdfOptions = WebApp.Models.PdfOptions;
 
 namespace WebApp.Services;
 
 /// <summary>
-/// Markdown から PDF への変換サービスの実装
+/// Markdown から PDF への変換サービスの実装（PdfSharpCore + MigraDoc 使用）
 /// </summary>
 public class PdfConverterService : IPdfConverterService
 {
     private readonly ILogger<PdfConverterService> _logger;
     private readonly MarkdownPipeline _markdownPipeline;
-    private static bool _browserDownloaded = false;
-    private static readonly SemaphoreSlim _downloadLock = new(1, 1);
-
-    /// <summary>
-    /// PDF 変換用の CSS スタイル
-    /// </summary>
-    private const string PdfStyles = @"
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
-
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Noto Sans JP', 'Segoe UI', 'Yu Gothic', 'Meiryo', sans-serif;
-            font-size: 11pt;
-            line-height: 1.8;
-            color: #333;
-            max-width: 100%;
-            margin: 0;
-            padding: 0;
-        }
-
-        h1, h2, h3, h4, h5, h6 {
-            font-weight: 700;
-            margin-top: 1.5em;
-            margin-bottom: 0.5em;
-            page-break-after: avoid;
-        }
-
-        h1 {
-            font-size: 24pt;
-            border-bottom: 2px solid #333;
-            padding-bottom: 0.3em;
-        }
-
-        h2 {
-            font-size: 18pt;
-            border-bottom: 1px solid #666;
-            padding-bottom: 0.2em;
-        }
-
-        h3 {
-            font-size: 14pt;
-        }
-
-        h4 {
-            font-size: 12pt;
-        }
-
-        p {
-            margin: 0.8em 0;
-            text-align: justify;
-        }
-
-        ul, ol {
-            margin: 0.8em 0;
-            padding-left: 2em;
-        }
-
-        li {
-            margin: 0.3em 0;
-        }
-
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin: 1em 0;
-            page-break-inside: avoid;
-        }
-
-        th, td {
-            border: 1px solid #ddd;
-            padding: 8px 12px;
-            text-align: left;
-        }
-
-        th {
-            background-color: #f5f5f5;
-            font-weight: 700;
-        }
-
-        tr:nth-child(even) {
-            background-color: #fafafa;
-        }
-
-        code {
-            font-family: 'Consolas', 'Monaco', monospace;
-            background-color: #f4f4f4;
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 10pt;
-        }
-
-        pre {
-            background-color: #f4f4f4;
-            padding: 1em;
-            border-radius: 5px;
-            overflow-x: auto;
-            page-break-inside: avoid;
-        }
-
-        pre code {
-            background-color: transparent;
-            padding: 0;
-        }
-
-        blockquote {
-            border-left: 4px solid #ddd;
-            margin: 1em 0;
-            padding-left: 1em;
-            color: #666;
-        }
-
-        img {
-            max-width: 100%;
-            height: auto;
-            display: block;
-            margin: 1em auto;
-        }
-
-        a {
-            color: #0066cc;
-            text-decoration: none;
-        }
-
-        hr {
-            border: none;
-            border-top: 1px solid #ddd;
-            margin: 2em 0;
-        }
-
-        /* ページ区切り */
-        .page-break {
-            page-break-before: always;
-        }
-    ";
+    private static bool _fontResolverInitialized = false;
+    private static readonly object _fontResolverLock = new();
 
     public PdfConverterService(ILogger<PdfConverterService> logger)
     {
@@ -167,76 +33,74 @@ public class PdfConverterService : IPdfConverterService
             .UseTaskLists()
             .Build();
 
-        _logger.LogInformation("PdfConverterService が初期化されました");
+        // フォントリゾルバーの初期化（1回のみ）
+        InitializeFontResolver();
+
+        _logger.LogInformation("PdfConverterService が初期化されました（PdfSharpCore + MigraDoc）");
+    }
+
+    /// <summary>
+    /// フォントリゾルバーを初期化します
+    /// </summary>
+    private void InitializeFontResolver()
+    {
+        lock (_fontResolverLock)
+        {
+            if (_fontResolverInitialized)
+            {
+                return;
+            }
+
+            try
+            {
+                // カスタムフォントリゾルバーを設定
+                if (GlobalFontSettings.FontResolver == null)
+                {
+                    GlobalFontSettings.FontResolver = new JapaneseFontResolver();
+                }
+                _fontResolverInitialized = true;
+                _logger.LogInformation("フォントリゾルバーが初期化されました");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "フォントリゾルバーの初期化中にエラーが発生しました");
+            }
+        }
     }
 
     /// <summary>
     /// Markdown を PDF に変換します
     /// </summary>
-    public async Task<byte[]> ConvertMarkdownToPdfAsync(
+    public Task<byte[]> ConvertMarkdownToPdfAsync(
         string markdown,
-        AppPdfOptions? options = null,
+        PdfOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        options ??= AppPdfOptions.DefaultA4;
+        options ??= PdfOptions.DefaultA4;
 
         try
         {
-            _logger.LogInformation("PDF 変換を開始します");
+            _logger.LogInformation("PDF 変換を開始します（MigraDoc）");
 
-            // ブラウザがダウンロードされていることを確認
-            await EnsureBrowserDownloadedAsync(cancellationToken);
+            // Markdown をパース
+            var document = Markdown.Parse(markdown, _markdownPipeline);
 
-            // Markdown → HTML 変換
-            var html = ConvertMarkdownToHtml(markdown);
+            // MigraDoc ドキュメントを作成
+            var pdfDocument = CreateMigraDocument(document, options);
 
-            // 完全な HTML ドキュメントを構築
-            var fullHtml = BuildFullHtmlDocument(html, options);
+            // PDF をレンダリング
+            var renderer = new PdfDocumentRenderer(true);
+            renderer.Document = pdfDocument;
+            renderer.RenderDocument();
 
-            // Puppeteer でブラウザを起動
-            await using var browser = await Puppeteer.LaunchAsync(new LaunchOptions
-            {
-                Headless = true,
-                Args = new[]
-                {
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu"
-                }
-            });
-
-            await using var page = await browser.NewPageAsync();
-
-            // HTML をセット
-            await page.SetContentAsync(fullHtml, new NavigationOptions
-            {
-                WaitUntil = new[] { WaitUntilNavigation.Networkidle0 }
-            });
-
-            // PDF を生成
-            var pdfGenOptions = new PuppeteerPdfOptions
-            {
-                Format = GetPaperFormat(options.PageSize),
-                Landscape = options.LandscapeMode,
-                PrintBackground = options.PrintBackground,
-                MarginOptions = new MarginOptions
-                {
-                    Top = options.MarginTop,
-                    Bottom = options.MarginBottom,
-                    Left = options.MarginLeft,
-                    Right = options.MarginRight
-                },
-                DisplayHeaderFooter = !string.IsNullOrEmpty(options.HeaderHtml) || !string.IsNullOrEmpty(options.FooterHtml),
-                HeaderTemplate = options.HeaderHtml ?? "<span></span>",
-                FooterTemplate = options.FooterHtml ?? "<span></span>"
-            };
-
-            var pdfData = await page.PdfDataAsync(pdfGenOptions);
+            // メモリストリームに出力
+            using var stream = new MemoryStream();
+            renderer.PdfDocument.Save(stream, false);
+            var pdfData = stream.ToArray();
 
             _logger.LogInformation("PDF 変換が完了しました。サイズ: {Size} bytes", pdfData.Length);
 
-            return pdfData;
+            return Task.FromResult(pdfData);
         }
         catch (Exception ex)
         {
@@ -259,86 +123,571 @@ public class PdfConverterService : IPdfConverterService
     }
 
     /// <summary>
-    /// Chromium ブラウザがダウンロード済みかどうかを確認し、必要に応じてダウンロードします
+    /// ブラウザダウンロード確認（MigraDoc では不要だが、インターフェース互換性のため）
     /// </summary>
-    public async Task<bool> EnsureBrowserDownloadedAsync(CancellationToken cancellationToken = default)
+    public Task<bool> EnsureBrowserDownloadedAsync(CancellationToken cancellationToken = default)
     {
-        if (_browserDownloaded)
+        // MigraDoc は外部ブラウザ不要
+        return Task.FromResult(true);
+    }
+
+    /// <summary>
+    /// MigraDoc ドキュメントを作成します
+    /// </summary>
+    private Document CreateMigraDocument(MarkdownDocument markdownDoc, PdfOptions options)
+    {
+        var document = new Document();
+
+        // ドキュメント情報
+        document.Info.Title = options.Title ?? "Document";
+        document.Info.Author = options.Author ?? "Azure AI Sample";
+
+        // スタイルの定義
+        DefineStyles(document);
+
+        // セクションの作成
+        var section = document.AddSection();
+
+        // ページ設定
+        ConfigurePageSetup(section, options);
+
+        // Markdown 要素を MigraDoc 要素に変換
+        foreach (var block in markdownDoc)
         {
-            return true;
+            ProcessBlock(block, section);
         }
 
-        await _downloadLock.WaitAsync(cancellationToken);
-        try
+        return document;
+    }
+
+    /// <summary>
+    /// スタイルを定義します
+    /// </summary>
+    private void DefineStyles(Document document)
+    {
+        // 基本スタイル
+        var style = document.Styles["Normal"];
+        style!.Font.Name = "Yu Gothic";
+        style.Font.Size = 11;
+        style.ParagraphFormat.LineSpacing = 14;
+        style.ParagraphFormat.LineSpacingRule = LineSpacingRule.AtLeast;
+        style.ParagraphFormat.SpaceAfter = 6;
+
+        // 見出し1
+        style = document.Styles["Heading1"];
+        style!.Font.Name = "Yu Gothic";
+        style.Font.Size = 22;
+        style.Font.Bold = true;
+        style.ParagraphFormat.SpaceBefore = 12;
+        style.ParagraphFormat.SpaceAfter = 6;
+        style.ParagraphFormat.Borders.Bottom.Width = 1;
+        style.ParagraphFormat.Borders.Bottom.Color = Colors.DarkGray;
+
+        // 見出し2
+        style = document.Styles["Heading2"];
+        style!.Font.Name = "Yu Gothic";
+        style.Font.Size = 18;
+        style.Font.Bold = true;
+        style.ParagraphFormat.SpaceBefore = 12;
+        style.ParagraphFormat.SpaceAfter = 6;
+        style.ParagraphFormat.Borders.Bottom.Width = 0.5;
+        style.ParagraphFormat.Borders.Bottom.Color = Colors.Gray;
+
+        // 見出し3
+        style = document.Styles["Heading3"];
+        style!.Font.Name = "Yu Gothic";
+        style.Font.Size = 14;
+        style.Font.Bold = true;
+        style.ParagraphFormat.SpaceBefore = 10;
+        style.ParagraphFormat.SpaceAfter = 4;
+
+        // 見出し4
+        style = document.Styles["Heading4"];
+        style!.Font.Name = "Yu Gothic";
+        style.Font.Size = 12;
+        style.Font.Bold = true;
+        style.ParagraphFormat.SpaceBefore = 8;
+        style.ParagraphFormat.SpaceAfter = 4;
+
+        // コードスタイル
+        style = document.Styles.AddStyle("Code", "Normal");
+        style.Font.Name = "Consolas";
+        style.Font.Size = 9;
+        style.ParagraphFormat.Shading.Color = new Color(245, 245, 245);
+        style.ParagraphFormat.LeftIndent = 10;
+        style.ParagraphFormat.RightIndent = 10;
+        style.ParagraphFormat.SpaceBefore = 6;
+        style.ParagraphFormat.SpaceAfter = 6;
+
+        // 引用スタイル
+        style = document.Styles.AddStyle("Quote", "Normal");
+        style.Font.Italic = true;
+        style.Font.Color = new Color(102, 102, 102);
+        style.ParagraphFormat.LeftIndent = 20;
+        style.ParagraphFormat.Borders.Left.Width = 3;
+        style.ParagraphFormat.Borders.Left.Color = new Color(200, 200, 200);
+    }
+
+    /// <summary>
+    /// ページ設定を構成します
+    /// </summary>
+    private void ConfigurePageSetup(Section section, PdfOptions options)
+    {
+        var pageSetup = section.PageSetup;
+
+        // ページサイズ
+        switch (options.PageSize.ToUpperInvariant())
         {
-            if (_browserDownloaded)
+            case "A3":
+                pageSetup.PageFormat = PageFormat.A3;
+                break;
+            case "A5":
+                pageSetup.PageFormat = PageFormat.A5;
+                break;
+            case "LETTER":
+                pageSetup.PageFormat = PageFormat.Letter;
+                break;
+            case "LEGAL":
+                pageSetup.PageFormat = PageFormat.Legal;
+                break;
+            default:
+                pageSetup.PageFormat = PageFormat.A4;
+                break;
+        }
+
+        // 向き
+        pageSetup.Orientation = options.LandscapeMode ? Orientation.Landscape : Orientation.Portrait;
+
+        // マージン
+        pageSetup.TopMargin = ParseMargin(options.MarginTop);
+        pageSetup.BottomMargin = ParseMargin(options.MarginBottom);
+        pageSetup.LeftMargin = ParseMargin(options.MarginLeft);
+        pageSetup.RightMargin = ParseMargin(options.MarginRight);
+    }
+
+    /// <summary>
+    /// マージン文字列をパースします（例: "20mm" → Unit）
+    /// </summary>
+    private Unit ParseMargin(string margin)
+    {
+        if (string.IsNullOrWhiteSpace(margin))
+        {
+            return Unit.FromMillimeter(20);
+        }
+
+        margin = margin.Trim().ToLowerInvariant();
+
+        if (margin.EndsWith("mm"))
+        {
+            if (double.TryParse(margin[..^2], out var mm))
             {
-                return true;
+                return Unit.FromMillimeter(mm);
             }
-
-            _logger.LogInformation("Chromium ブラウザのダウンロードを確認しています...");
-
-            var browserFetcher = new BrowserFetcher();
-            var installedBrowser = browserFetcher.GetInstalledBrowsers().FirstOrDefault();
-
-            if (installedBrowser == null)
+        }
+        else if (margin.EndsWith("cm"))
+        {
+            if (double.TryParse(margin[..^2], out var cm))
             {
-                _logger.LogInformation("Chromium ブラウザをダウンロードしています...");
-                await browserFetcher.DownloadAsync();
-                _logger.LogInformation("Chromium ブラウザのダウンロードが完了しました");
+                return Unit.FromCentimeter(cm);
+            }
+        }
+        else if (margin.EndsWith("in"))
+        {
+            if (double.TryParse(margin[..^2], out var inch))
+            {
+                return Unit.FromInch(inch);
+            }
+        }
+        else if (margin.EndsWith("pt"))
+        {
+            if (double.TryParse(margin[..^2], out var pt))
+            {
+                return Unit.FromPoint(pt);
+            }
+        }
+        else if (double.TryParse(margin, out var value))
+        {
+            return Unit.FromPoint(value);
+        }
+
+        return Unit.FromMillimeter(20);
+    }
+
+    /// <summary>
+    /// Markdown ブロック要素を処理します
+    /// </summary>
+    private void ProcessBlock(Block block, Section section)
+    {
+        switch (block)
+        {
+            case HeadingBlock heading:
+                ProcessHeading(heading, section);
+                break;
+
+            case ParagraphBlock paragraph:
+                ProcessParagraph(paragraph, section);
+                break;
+
+            case ListBlock list:
+                ProcessList(list, section);
+                break;
+
+            case FencedCodeBlock codeBlock:
+                ProcessCodeBlock(codeBlock, section);
+                break;
+
+            case CodeBlock codeBlock:
+                ProcessCodeBlock(codeBlock, section);
+                break;
+
+            case QuoteBlock quote:
+                ProcessQuote(quote, section);
+                break;
+
+            case ThematicBreakBlock:
+                ProcessThematicBreak(section);
+                break;
+
+            case Markdig.Extensions.Tables.Table table:
+                ProcessTable(table, section);
+                break;
+
+            default:
+                // その他のブロックは段落として処理
+                var text = block.ToString();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    section.AddParagraph(text);
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 見出しを処理します
+    /// </summary>
+    private void ProcessHeading(HeadingBlock heading, Section section)
+    {
+        var styleName = heading.Level switch
+        {
+            1 => "Heading1",
+            2 => "Heading2",
+            3 => "Heading3",
+            4 => "Heading4",
+            _ => "Heading4"
+        };
+
+        var paragraph = section.AddParagraph();
+        paragraph.Style = styleName;
+        ProcessInlines(heading.Inline, paragraph);
+    }
+
+    /// <summary>
+    /// 段落を処理します
+    /// </summary>
+    private void ProcessParagraph(ParagraphBlock paragraphBlock, Section section)
+    {
+        var paragraph = section.AddParagraph();
+        paragraph.Style = "Normal";
+        ProcessInlines(paragraphBlock.Inline, paragraph);
+    }
+
+    /// <summary>
+    /// リストを処理します
+    /// </summary>
+    private void ProcessList(ListBlock list, Section section, int level = 0)
+    {
+        var isOrdered = list.IsOrdered;
+        var counter = 1;
+
+        foreach (var item in list)
+        {
+            if (item is ListItemBlock listItem)
+            {
+                var indent = 15 * (level + 1);
+                
+                foreach (var block in listItem)
+                {
+                    if (block is ParagraphBlock paragraphBlock)
+                    {
+                        var paragraph = section.AddParagraph();
+                        paragraph.Style = "Normal";
+                        paragraph.Format.LeftIndent = Unit.FromPoint(indent);
+
+                        // リストマーカー
+                        var marker = isOrdered ? $"{counter}. " : "• ";
+                        paragraph.AddText(marker);
+                        
+                        ProcessInlines(paragraphBlock.Inline, paragraph);
+                        counter++;
+                    }
+                    else if (block is ListBlock nestedList)
+                    {
+                        ProcessList(nestedList, section, level + 1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// コードブロックを処理します
+    /// </summary>
+    private void ProcessCodeBlock(LeafBlock codeBlock, Section section)
+    {
+        var paragraph = section.AddParagraph();
+        paragraph.Style = "Code";
+
+        var lines = codeBlock.Lines.ToString();
+        paragraph.AddText(lines);
+    }
+
+    /// <summary>
+    /// 引用を処理します
+    /// </summary>
+    private void ProcessQuote(QuoteBlock quote, Section section)
+    {
+        foreach (var block in quote)
+        {
+            if (block is ParagraphBlock paragraphBlock)
+            {
+                var paragraph = section.AddParagraph();
+                paragraph.Style = "Quote";
+                ProcessInlines(paragraphBlock.Inline, paragraph);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 水平線を処理します
+    /// </summary>
+    private void ProcessThematicBreak(Section section)
+    {
+        var paragraph = section.AddParagraph();
+        paragraph.Format.Borders.Bottom.Width = 1;
+        paragraph.Format.Borders.Bottom.Color = Colors.Gray;
+        paragraph.Format.SpaceBefore = 12;
+        paragraph.Format.SpaceAfter = 12;
+    }
+
+    /// <summary>
+    /// テーブルを処理します
+    /// </summary>
+    private void ProcessTable(Markdig.Extensions.Tables.Table markdownTable, Section section)
+    {
+        var table = section.AddTable();
+        table.Borders.Width = 0.5;
+        table.Borders.Color = new Color(200, 200, 200);
+
+        // 列数を取得
+        var columnCount = 0;
+        foreach (var row in markdownTable)
+        {
+            if (row is Markdig.Extensions.Tables.TableRow tableRow)
+            {
+                columnCount = Math.Max(columnCount, tableRow.Count);
+            }
+        }
+
+        if (columnCount == 0) return;
+
+        // 列を追加（均等幅）
+        var columnWidth = Unit.FromCentimeter(16.0 / columnCount);
+        for (int i = 0; i < columnCount; i++)
+        {
+            var column = table.AddColumn(columnWidth);
+        }
+
+        // 行を処理
+        var isFirstRow = true;
+        foreach (var row in markdownTable)
+        {
+            if (row is Markdig.Extensions.Tables.TableRow tableRow)
+            {
+                var pdfRow = table.AddRow();
+                
+                var cellIndex = 0;
+                foreach (var cell in tableRow)
+                {
+                    if (cell is Markdig.Extensions.Tables.TableCell tableCell && cellIndex < columnCount)
+                    {
+                        var pdfCell = pdfRow.Cells[cellIndex];
+                        
+                        // ヘッダー行のスタイル（最初の行をヘッダーとして扱う）
+                        if (isFirstRow)
+                        {
+                            pdfCell.Shading.Color = new Color(240, 240, 240);
+                            pdfCell.Format.Font.Bold = true;
+                        }
+
+                        pdfCell.VerticalAlignment = VerticalAlignment.Center;
+                        var paragraph = pdfCell.AddParagraph();
+                        
+                        foreach (var block in tableCell)
+                        {
+                            if (block is ParagraphBlock paragraphBlock)
+                            {
+                                ProcessInlines(paragraphBlock.Inline, paragraph);
+                            }
+                        }
+                        
+                        cellIndex++;
+                    }
+                }
+                
+                isFirstRow = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// インライン要素を処理します
+    /// </summary>
+    private void ProcessInlines(ContainerInline? container, Paragraph paragraph)
+    {
+        if (container == null) return;
+
+        foreach (var inline in container)
+        {
+            switch (inline)
+            {
+                case LiteralInline literal:
+                    paragraph.AddText(literal.Content.ToString());
+                    break;
+
+                case EmphasisInline emphasis:
+                    var emphasisText = GetInlineText(emphasis);
+                    var formattedText = paragraph.AddFormattedText(emphasisText);
+                    if (emphasis.DelimiterCount == 2)
+                    {
+                        formattedText.Bold = true;
+                    }
+                    else
+                    {
+                        formattedText.Italic = true;
+                    }
+                    break;
+
+                case CodeInline code:
+                    var codeText = paragraph.AddFormattedText(code.Content);
+                    codeText.Font.Name = "Consolas";
+                    codeText.Font.Size = 9;
+                    // MigraDocCore では FormattedText に Shading プロパティがないため、背景色なし
+                    break;
+
+                case LinkInline link:
+                    var linkText = GetInlineText(link);
+                    var hyperlink = paragraph.AddHyperlink(link.Url ?? "", HyperlinkType.Web);
+                    var linkFormattedText = hyperlink.AddFormattedText(linkText);
+                    linkFormattedText.Color = new Color(0, 102, 204);
+                    linkFormattedText.Underline = Underline.Single;
+                    break;
+
+                case LineBreakInline:
+                    paragraph.AddLineBreak();
+                    break;
+
+                case HtmlInline:
+                    // HTML インラインは無視
+                    break;
+
+                default:
+                    var text = inline.ToString();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        paragraph.AddText(text);
+                    }
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// インライン要素からテキストを取得します
+    /// </summary>
+    private string GetInlineText(ContainerInline container)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var inline in container)
+        {
+            if (inline is LiteralInline literal)
+            {
+                sb.Append(literal.Content.ToString());
+            }
+            else if (inline is ContainerInline nestedContainer)
+            {
+                sb.Append(GetInlineText(nestedContainer));
             }
             else
             {
-                _logger.LogInformation("Chromium ブラウザは既にインストールされています");
+                sb.Append(inline.ToString());
             }
-
-            _browserDownloaded = true;
-            return true;
         }
-        finally
-        {
-            _downloadLock.Release();
-        }
+        return sb.ToString();
     }
+}
 
-    /// <summary>
-    /// 完全な HTML ドキュメントを構築します
-    /// </summary>
-    private string BuildFullHtmlDocument(string bodyHtml, Models.PdfOptions options)
+/// <summary>
+/// 日本語フォントリゾルバー
+/// </summary>
+public class JapaneseFontResolver : IFontResolver
+{
+    public string DefaultFontName => "Yu Gothic";
+
+    public byte[]? GetFont(string faceName)
     {
-        var title = options.Title ?? "Document";
-
-        return $@"
-<!DOCTYPE html>
-<html lang=""ja"">
-<head>
-    <meta charset=""UTF-8"">
-    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0"">
-    <title>{System.Web.HttpUtility.HtmlEncode(title)}</title>
-    <style>
-        {PdfStyles}
-    </style>
-</head>
-<body>
-    {bodyHtml}
-</body>
-</html>";
-    }
-
-    /// <summary>
-    /// ページサイズ名から PaperFormat を取得します
-    /// </summary>
-    private static PaperFormat GetPaperFormat(string pageSize)
-    {
-        return pageSize.ToUpperInvariant() switch
+        // Windows の游ゴシックフォントを使用
+        var fontPaths = new[]
         {
-            "A4" => PaperFormat.A4,
-            "A3" => PaperFormat.A3,
-            "A5" => PaperFormat.A5,
-            "LETTER" => PaperFormat.Letter,
-            "LEGAL" => PaperFormat.Legal,
-            "TABLOID" => PaperFormat.Tabloid,
-            _ => PaperFormat.A4
+            @"C:\Windows\Fonts\YuGothM.ttc",  // 游ゴシック Medium
+            @"C:\Windows\Fonts\YuGothB.ttc",  // 游ゴシック Bold
+            @"C:\Windows\Fonts\meiryo.ttc",   // メイリオ
+            @"C:\Windows\Fonts\msgothic.ttc", // MS Gothic
+            @"C:\Windows\Fonts\arial.ttf",    // Arial（フォールバック）
         };
+
+        foreach (var path in fontPaths)
+        {
+            if (File.Exists(path))
+            {
+                try
+                {
+                    return File.ReadAllBytes(path);
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic)
+    {
+        // フォントファミリー名を正規化
+        var normalizedName = familyName.ToLowerInvariant();
+        
+        // 日本語フォントのマッピング
+        if (normalizedName.Contains("gothic") || 
+            normalizedName.Contains("ゴシック") ||
+            normalizedName.Contains("yu gothic"))
+        {
+            return new FontResolverInfo("YuGothic", isBold, isItalic);
+        }
+        
+        if (normalizedName.Contains("meiryo") || normalizedName.Contains("メイリオ"))
+        {
+            return new FontResolverInfo("Meiryo", isBold, isItalic);
+        }
+
+        if (normalizedName.Contains("consolas") || normalizedName.Contains("mono"))
+        {
+            return new FontResolverInfo("Consolas", isBold, isItalic);
+        }
+
+        // デフォルトは游ゴシック
+        return new FontResolverInfo("YuGothic", isBold, isItalic);
     }
 }
