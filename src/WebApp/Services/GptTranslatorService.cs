@@ -477,23 +477,39 @@ public class GptTranslatorService : IGptTranslatorService
     {
         var imageUrls = new List<string>();
 
+        _logger.LogInformation("[PDF画像抽出] 開始: DocumentId={DocumentId}, Timestamp={Timestamp}, PDFサイズ={Size} bytes", 
+            documentId, timestamp, pdfBytes.Length);
+
         try
         {
             var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+            
+            _logger.LogInformation("[PDF画像抽出] コンテナ作成を試行: {ContainerName}", _translatedContainerName);
             await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+            _logger.LogInformation("[PDF画像抽出] コンテナ準備完了: {ContainerName}", _translatedContainerName);
 
             using var pdfDocument = PdfDocument.Open(pdfBytes);
             var imageIndex = 0;
+            var totalImagesFound = 0;
 
-            _logger.LogInformation("PDF ページ数: {PageCount}", pdfDocument.NumberOfPages);
+            _logger.LogInformation("[PDF画像抽出] PDF を開きました。ページ数: {PageCount}", pdfDocument.NumberOfPages);
 
             foreach (var page in pdfDocument.GetPages())
             {
-                _logger.LogInformation("ページ {PageNumber} から画像を抽出中...", page.Number);
-
                 // ページ内の画像を取得
-                var images = page.GetImages();
+                var images = page.GetImages().ToList();
+                var pageImageCount = images.Count;
+                totalImagesFound += pageImageCount;
                 
+                _logger.LogInformation("[PDF画像抽出] ページ {PageNumber}/{TotalPages}: 検出された画像数={ImageCount}", 
+                    page.Number, pdfDocument.NumberOfPages, pageImageCount);
+
+                if (pageImageCount == 0)
+                {
+                    _logger.LogInformation("[PDF画像抽出] ページ {PageNumber} には画像がありません", page.Number);
+                    continue;
+                }
+
                 foreach (var image in images)
                 {
                     try
@@ -501,41 +517,50 @@ public class GptTranslatorService : IGptTranslatorService
                         imageIndex++;
                         var imageBytes = image.RawBytes.ToArray();
                         
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: RawBytes サイズ={Size} bytes, Bounds={Bounds}", 
+                            imageIndex, imageBytes.Length, image.Bounds);
+                        
                         if (imageBytes.Length == 0)
                         {
-                            _logger.LogWarning("画像データが空です。スキップします。");
+                            _logger.LogWarning("[PDF画像抽出] 画像 {Index}: データが空のためスキップ", imageIndex);
                             continue;
                         }
-
-                        _logger.LogInformation("画像 {Index} を処理中... サイズ: {Size} bytes", imageIndex, imageBytes.Length);
 
                         // 画像形式を判定してファイル名を決定
                         var extension = DetermineImageExtension(imageBytes);
                         var imageName = $"images/{documentId}_{timestamp}/image_{imageIndex:D3}{extension}";
                         
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: 形式={Extension}, 保存先={ImageName}", 
+                            imageIndex, extension, imageName);
+                        
                         // Blob Storage に保存
                         var blobClient = containerClient.GetBlobClient(imageName);
                         using var imageStream = new MemoryStream(imageBytes);
+                        
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: Blob Storage にアップロード中...", imageIndex);
                         await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: アップロード成功", imageIndex);
 
                         // SAS トークン付き URL を生成（24時間有効）
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: SAS URL を生成中...", imageIndex);
                         var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
                         imageUrls.Add(imageUrl);
 
-                        _logger.LogInformation("画像を保存しました: {ImageName}", imageName);
+                        _logger.LogInformation("[PDF画像抽出] 画像 {Index}: 完了 URL={Url}", imageIndex, imageUrl);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "PDF 画像 {Index} の抽出に失敗しました", imageIndex);
+                        _logger.LogError(ex, "[PDF画像抽出] 画像 {Index}: 抽出に失敗しました", imageIndex);
                     }
                 }
             }
 
-            _logger.LogInformation("PDF から {Count} 件の画像を抽出しました", imageUrls.Count);
+            _logger.LogInformation("[PDF画像抽出] 完了: 検出画像数={TotalFound}, 抽出成功数={ExtractedCount}", 
+                totalImagesFound, imageUrls.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "PDF からの画像抽出中にエラーが発生しました");
+            _logger.LogError(ex, "[PDF画像抽出] PDF 処理中にエラーが発生しました");
         }
 
         return imageUrls;
@@ -552,68 +577,95 @@ public class GptTranslatorService : IGptTranslatorService
     {
         var imageUrls = new List<string>();
 
+        _logger.LogInformation("[Word画像抽出] 開始: DocumentId={DocumentId}, Timestamp={Timestamp}, DOCXサイズ={Size} bytes", 
+            documentId, timestamp, docxBytes.Length);
+
         try
         {
             var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+            
+            _logger.LogInformation("[Word画像抽出] コンテナ作成を試行: {ContainerName}", _translatedContainerName);
             await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+            _logger.LogInformation("[Word画像抽出] コンテナ準備完了: {ContainerName}", _translatedContainerName);
 
             using var memoryStream = new MemoryStream(docxBytes);
             using var wordDocument = WordprocessingDocument.Open(memoryStream, false);
 
             if (wordDocument.MainDocumentPart == null)
             {
-                _logger.LogWarning("Word ドキュメントの MainDocumentPart が見つかりません");
+                _logger.LogWarning("[Word画像抽出] MainDocumentPart が見つかりません。画像なしとして処理を続行します。");
                 return imageUrls;
             }
 
             var imageIndex = 0;
+            var imageParts = wordDocument.MainDocumentPart.ImageParts.ToList();
+            var totalImagesFound = imageParts.Count;
+            
+            _logger.LogInformation("[Word画像抽出] 検出された ImageParts 数: {Count}", totalImagesFound);
+
+            if (totalImagesFound == 0)
+            {
+                _logger.LogInformation("[Word画像抽出] ドキュメントに埋め込み画像がありません");
+                return imageUrls;
+            }
 
             // 埋め込み画像を取得
-            foreach (var imagePart in wordDocument.MainDocumentPart.ImageParts)
+            foreach (var imagePart in imageParts)
             {
                 try
                 {
                     imageIndex++;
+                    
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}/{Total}: ContentType={ContentType}, Uri={Uri}", 
+                        imageIndex, totalImagesFound, imagePart.ContentType, imagePart.Uri);
                     
                     using var imageStream = imagePart.GetStream();
                     using var imageMemoryStream = new MemoryStream();
                     await imageStream.CopyToAsync(imageMemoryStream, cancellationToken);
                     var imageBytes = imageMemoryStream.ToArray();
 
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: 読み込みサイズ={Size} bytes", imageIndex, imageBytes.Length);
+
                     if (imageBytes.Length == 0)
                     {
-                        _logger.LogWarning("画像データが空です。スキップします。");
+                        _logger.LogWarning("[Word画像抽出] 画像 {Index}: データが空のためスキップ", imageIndex);
                         continue;
                     }
-
-                    _logger.LogInformation("画像 {Index} を処理中... サイズ: {Size} bytes", imageIndex, imageBytes.Length);
 
                     // 画像形式を判定してファイル名を決定
                     var extension = DetermineImageExtension(imageBytes);
                     var imageName = $"images/{documentId}_{timestamp}/image_{imageIndex:D3}{extension}";
 
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: 形式={Extension}, 保存先={ImageName}", 
+                        imageIndex, extension, imageName);
+
                     // Blob Storage に保存
                     var blobClient = containerClient.GetBlobClient(imageName);
                     imageMemoryStream.Position = 0;
+                    
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: Blob Storage にアップロード中...", imageIndex);
                     await blobClient.UploadAsync(imageMemoryStream, overwrite: true, cancellationToken);
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: アップロード成功", imageIndex);
 
                     // SAS トークン付き URL を生成（24時間有効）
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: SAS URL を生成中...", imageIndex);
                     var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
                     imageUrls.Add(imageUrl);
 
-                    _logger.LogInformation("画像を保存しました: {ImageName}", imageName);
+                    _logger.LogInformation("[Word画像抽出] 画像 {Index}: 完了 URL={Url}", imageIndex, imageUrl);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Word 画像 {Index} の抽出に失敗しました", imageIndex);
+                    _logger.LogError(ex, "[Word画像抽出] 画像 {Index}: 抽出に失敗しました", imageIndex);
                 }
             }
 
-            _logger.LogInformation("Word から {Count} 件の画像を抽出しました", imageUrls.Count);
+            _logger.LogInformation("[Word画像抽出] 完了: 検出画像数={TotalFound}, 抽出成功数={ExtractedCount}", 
+                totalImagesFound, imageUrls.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Word からの画像抽出中にエラーが発生しました");
+            _logger.LogError(ex, "[Word画像抽出] Word 処理中にエラーが発生しました");
         }
 
         return imageUrls;
