@@ -264,7 +264,9 @@ public class GptTranslatorService : IGptTranslatorService
             });
 
             // Markdown 形式で出力し、Figures も取得
-            // RequestContext を使用して追加パラメータを指定
+            // features パラメータに "figures" を指定して図を抽出
+            _logger.LogInformation("Document Intelligence API を呼び出し中... (outputContentFormat=markdown, features=figures)");
+            
             var requestContext = new RequestContext();
             var operation = await _documentIntelligenceClient.AnalyzeDocumentAsync(
                 WaitUntil.Completed,
@@ -273,11 +275,13 @@ public class GptTranslatorService : IGptTranslatorService
                 pages: null,
                 locale: null,
                 stringIndexType: null,
-                features: null,
+                features: new DocumentAnalysisFeature[] { "figures" },  // 文字列から暗黙的変換
                 queryFields: null,
                 outputContentFormat: "markdown",
                 output: null,
                 context: requestContext);
+            
+            _logger.LogInformation("Document Intelligence API 呼び出し完了。Operation ID: {OperationId}", operation.Id);
 
             // レスポンスを JSON としてパース
             var responseJson = JsonDocument.Parse(operation.Value.ToStream());
