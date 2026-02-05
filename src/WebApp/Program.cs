@@ -86,9 +86,6 @@ builder.Services.AddScoped<ITranslatorService, AzureTranslatorService>();
 // GPT 翻訳サービスの登録
 builder.Services.AddScoped<IGptTranslatorService, GptTranslatorService>();
 
-// PDF 変換サービスの登録
-builder.Services.AddScoped<IPdfConverterService, PdfConverterService>();
-
 // ヘルスチェックの登録
 builder.Services.AddHealthChecks()
     .AddCheck<DocumentIntelligenceHealthCheck>(
@@ -296,10 +293,6 @@ app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
             // GPT 翻訳サービスの初期化確認
             var gptTranslatorService = sp.GetRequiredService<IGptTranslatorService>();
             warmupLogger.LogInformation("GPT 翻訳サービスの初期化成功");
-            
-            // PDF 変換サービスの初期化確認
-            var pdfConverterService = sp.GetRequiredService<IPdfConverterService>();
-            warmupLogger.LogInformation("PDF 変換サービスの初期化成功");
         }
         else
         {

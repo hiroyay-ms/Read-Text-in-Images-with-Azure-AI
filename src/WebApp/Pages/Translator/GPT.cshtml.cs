@@ -11,7 +11,6 @@ namespace WebApp.Pages.Translator;
 public class GPTModel : PageModel
 {
     private readonly IGptTranslatorService _translatorService;
-    private readonly IPdfConverterService _pdfConverterService;
     private readonly ILogger<GPTModel> _logger;
 
     /// <summary>
@@ -39,11 +38,9 @@ public class GPTModel : PageModel
 
     public GPTModel(
         IGptTranslatorService translatorService,
-        IPdfConverterService pdfConverterService,
         ILogger<GPTModel> logger)
     {
         _translatorService = translatorService;
-        _pdfConverterService = pdfConverterService;
         _logger = logger;
     }
 
@@ -209,78 +206,6 @@ public class GPTModel : PageModel
         {
             _logger.LogError(ex, "翻訳結果の取得中にエラーが発生しました: {BlobName}", blobName);
             return StatusCode(500, new { error = "翻訳結果の取得に失敗しました" });
-        }
-    }
-
-    /// <summary>
-    /// Blob Storage の Markdown を PDF に変換してダウンロード
-    /// </summary>
-    /// <param name="blobName">Blob 名</param>
-    public async Task<IActionResult> OnPostConvertToPdfAsync(string blobName)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(blobName))
-            {
-                return BadRequest(new { error = "Blob 名が指定されていません" });
-            }
-
-            _logger.LogInformation("PDF 変換開始: {BlobName}", blobName);
-
-            // Blob から Markdown を取得
-            var markdown = await _translatorService.GetTranslationResultAsync(blobName);
-
-            // Markdown を PDF に変換
-            var pdfBytes = await _pdfConverterService.ConvertMarkdownToPdfAsync(markdown);
-
-            // ファイル名を生成（.md → .pdf）
-            var pdfFileName = Path.ChangeExtension(blobName, ".pdf");
-
-            _logger.LogInformation("PDF 変換完了: {BlobName} → {PdfFileName}, サイズ: {Size} bytes",
-                blobName, pdfFileName, pdfBytes.Length);
-
-            // PDF ファイルをダウンロード用に返却
-            return File(pdfBytes, "application/pdf", pdfFileName);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "PDF 変換中にエラーが発生しました: {BlobName}", blobName);
-            return StatusCode(500, new { error = "PDF 変換に失敗しました" });
-        }
-    }
-
-    /// <summary>
-    /// Markdown を HTML に変換（プレビュー用）
-    /// </summary>
-    /// <param name="blobName">Blob 名</param>
-    public async Task<IActionResult> OnGetPreviewHtmlAsync(string blobName)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(blobName))
-            {
-                return BadRequest(new { error = "Blob 名が指定されていません" });
-            }
-
-            _logger.LogInformation("HTML プレビュー生成: {BlobName}", blobName);
-
-            // Blob から Markdown を取得
-            var markdown = await _translatorService.GetTranslationResultAsync(blobName);
-
-            // Markdown を HTML に変換
-            var html = _pdfConverterService.ConvertMarkdownToHtml(markdown);
-
-            return new JsonResult(new
-            {
-                success = true,
-                blobName = blobName,
-                html = html
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "HTML プレビュー生成中にエラーが発生しました: {BlobName}", blobName);
-            return StatusCode(500, new { error = "HTML プレビューの生成に失敗しました" });
         }
     }
 

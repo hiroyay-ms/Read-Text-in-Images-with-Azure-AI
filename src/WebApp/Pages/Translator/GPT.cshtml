@@ -260,14 +260,10 @@
                                         <button class="btn btn-primary" id="viewResultBtn">
                                             <i class="bi bi-eye"></i> 翻訳結果を見る
                                         </button>
-                                        <div class="btn-group" role="group">
-                                            <button class="btn btn-outline-secondary" id="downloadMdBtn">
-                                                <i class="bi bi-markdown"></i> Markdown
-                                            </button>
-                                            <button class="btn btn-outline-secondary" id="downloadPdfBtn">
-                                                <i class="bi bi-file-pdf"></i> PDF 変換
-                                            </button>
-                                        </div>
+                                        <p class="text-muted small mt-2 mb-0">
+                                            <i class="bi bi-info-circle"></i>
+                                            PDF が必要な場合は、プレビュー画面から印刷（Ctrl+P）→「PDF として保存」を選択してください
+                                        </p>
                                     </div>
                                 </div>
                             </div>
@@ -301,6 +297,9 @@
                 <div id="previewContent" style="display: none;"></div>
             </div>
             <div class="modal-footer">
+                <button type="button" class="btn btn-outline-primary" id="printPreviewBtn">
+                    <i class="bi bi-printer"></i> 印刷 / PDF 保存
+                </button>
                 <button type="button" class="btn btn-outline-secondary" id="copyMarkdownBtn">
                     <i class="bi bi-clipboard"></i> Markdown をコピー
                 </button>

@@ -42,9 +42,8 @@ class GptTranslatorApp {
         
         // アクションボタン
         this.viewResultBtn = document.getElementById('viewResultBtn');
-        this.downloadMdBtn = document.getElementById('downloadMdBtn');
-        this.downloadPdfBtn = document.getElementById('downloadPdfBtn');
         this.copyMarkdownBtn = document.getElementById('copyMarkdownBtn');
+        this.printPreviewBtn = document.getElementById('printPreviewBtn');
         
         // プレビューモーダル
         this.previewModal = new bootstrap.Modal(document.getElementById('previewModal'));
@@ -142,14 +141,9 @@ class GptTranslatorApp {
             this.showPreview();
         });
         
-        // Markdown ダウンロードボタン
-        this.downloadMdBtn.addEventListener('click', () => {
-            this.downloadMarkdown();
-        });
-        
-        // PDF 変換ボタン
-        this.downloadPdfBtn.addEventListener('click', () => {
-            this.convertToPdf();
+        // 印刷 / PDF 保存ボタン
+        this.printPreviewBtn.addEventListener('click', () => {
+            this.printPreview();
         });
         
         // Markdown コピーボタン
@@ -406,76 +400,90 @@ class GptTranslatorApp {
         }
     }
 
-    async downloadMarkdown() {
-        if (!this.currentBlobName) {
-            this.showError('翻訳結果がありません');
-            return;
-        }
+    printPreview() {
+        // プレビューコンテンツを印刷用に新しいウィンドウで開く
+        const printContent = this.previewContent.innerHTML;
         
-        try {
-            // Markdown ダウンロード用のリンクを生成
-            const downloadUrl = `?handler=DownloadMarkdown&blobName=${encodeURIComponent(this.currentBlobName)}`;
-            
-            // ダウンロード
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = this.currentBlobName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-        } catch (error) {
-            console.error('ダウンロードエラー:', error);
-            this.showError('Markdown のダウンロードに失敗しました');
-        }
-    }
-
-    async convertToPdf() {
-        if (!this.currentBlobName) {
-            this.showError('翻訳結果がありません');
-            return;
-        }
+        const printWindow = window.open('', '_blank');
+        printWindow.document.write(`
+            <!DOCTYPE html>
+            <html lang="ja">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>翻訳結果 - 印刷</title>
+                <style>
+                    body {
+                        font-family: 'Yu Gothic', 'Meiryo', 'MS PGothic', sans-serif;
+                        line-height: 1.8;
+                        max-width: 800px;
+                        margin: 0 auto;
+                        padding: 40px;
+                        color: #333;
+                    }
+                    h1, h2, h3, h4, h5, h6 {
+                        margin-top: 1.5em;
+                        margin-bottom: 0.5em;
+                        line-height: 1.4;
+                    }
+                    h1 { font-size: 2em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+                    h2 { font-size: 1.5em; border-bottom: 1px solid #666; padding-bottom: 0.2em; }
+                    h3 { font-size: 1.25em; }
+                    p { margin: 0.8em 0; }
+                    ul, ol { padding-left: 2em; }
+                    li { margin: 0.3em 0; }
+                    table {
+                        border-collapse: collapse;
+                        width: 100%;
+                        margin: 1em 0;
+                    }
+                    th, td {
+                        border: 1px solid #ddd;
+                        padding: 8px 12px;
+                        text-align: left;
+                    }
+                    th { background-color: #f5f5f5; }
+                    code {
+                        font-family: Consolas, 'Courier New', monospace;
+                        background-color: #f4f4f4;
+                        padding: 2px 6px;
+                        border-radius: 3px;
+                    }
+                    pre {
+                        background-color: #f4f4f4;
+                        padding: 15px;
+                        border-radius: 5px;
+                        overflow-x: auto;
+                    }
+                    pre code {
+                        background-color: transparent;
+                        padding: 0;
+                    }
+                    blockquote {
+                        border-left: 4px solid #ddd;
+                        margin: 1em 0;
+                        padding: 0.5em 1em;
+                        color: #666;
+                        background-color: #fafafa;
+                    }
+                    img { max-width: 100%; height: auto; }
+                    @media print {
+                        body { padding: 0; }
+                        @page { margin: 2cm; }
+                    }
+                </style>
+            </head>
+            <body>
+                ${printContent}
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
         
-        try {
-            // PDF 変換中の表示
-            this.downloadPdfBtn.disabled = true;
-            this.downloadPdfBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> 変換中...';
-            
-            // アンチフォージェリトークンを取得
-            const token = document.querySelector('input[name="__RequestVerificationToken"]').value;
-            
-            // PDF 変換リクエスト
-            const response = await fetch(`?handler=ConvertToPdf&blobName=${encodeURIComponent(this.currentBlobName)}`, {
-                method: 'POST',
-                headers: {
-                    'RequestVerificationToken': token
-                }
-            });
-            
-            if (!response.ok) {
-                throw new Error('PDF 変換に失敗しました');
-            }
-            
-            // PDF をダウンロード
-            const blob = await response.blob();
-            const pdfFileName = this.currentBlobName.replace('.md', '.pdf');
-            
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = pdfFileName;
-            document.body.appendChild(a);
-            a.click();
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-            
-        } catch (error) {
-            console.error('PDF 変換エラー:', error);
-            this.showError(error.message || 'PDF 変換に失敗しました');
-        } finally {
-            this.downloadPdfBtn.disabled = false;
-            this.downloadPdfBtn.innerHTML = '<i class="bi bi-file-pdf"></i> PDF 変換';
-        }
+        // 少し待ってから印刷ダイアログを開く
+        setTimeout(() => {
+            printWindow.print();
+        }, 500);
     }
 
     async copyMarkdown() {

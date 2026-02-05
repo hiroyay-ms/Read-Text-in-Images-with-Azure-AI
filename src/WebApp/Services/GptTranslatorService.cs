@@ -349,17 +349,6 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     /// <summary>
-    /// Blob Storage の Markdown を PDF に変換します
-    /// </summary>
-    public async Task<byte[]> ConvertToPdfAsync(
-        string blobName,
-        CancellationToken cancellationToken = default)
-    {
-        // TODO: Phase 21 で実装
-        throw new NotImplementedException("PDF 変換機能は Phase 21 で実装予定です");
-    }
-
-    /// <summary>
     /// サポートされている言語の一覧を取得します
     /// </summary>
     public Task<Dictionary<string, string>> GetSupportedLanguagesAsync()

@@ -53,16 +53,6 @@ public interface IGptTranslatorService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Blob Storage の Markdown を PDF に変換します
-    /// </summary>
-    /// <param name="blobName">Blob 名</param>
-    /// <param name="cancellationToken">キャンセルトークン</param>
-    /// <returns>PDF のバイナリデータ</returns>
-    Task<byte[]> ConvertToPdfAsync(
-        string blobName,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// サポートされている言語の一覧を取得します
     /// </summary>
     /// <returns>言語コードと言語名の辞書（例: {"en": "English", "ja": "日本語"}）</returns>
