@@ -635,13 +635,11 @@ public class PdfConverterService : IPdfConverterService
 /// 多言語対応フォントリゾルバー
 /// Windows に標準でインストールされているフォントを使用して、
 /// 日本語、中国語、韓国語などの多言語に対応します。
-/// PdfSharpCore が TTC ファイルを直接扱えないため、TTF を抽出して使用します。
 /// </summary>
 public class JapaneseFontResolver : IFontResolver
 {
     private static readonly Dictionary<string, byte[]?> _fontCache = new();
     private static readonly object _cacheLock = new();
-    private static string? _loadedFontPath = null;
 
     public string DefaultFontName => "MultiLangFont";
 
@@ -662,78 +660,42 @@ public class JapaneseFontResolver : IFontResolver
 
         if (normalizedName.Contains("consolas"))
         {
-            fontData = LoadFontFromFile(@"C:\Windows\Fonts\consola.ttf");
-            if (fontData == null)
-            {
-                fontData = LoadFontFromFile(@"C:\Windows\Fonts\cour.ttf"); // Courier New
-            }
-            if (fontData == null)
-            {
-                fontData = LoadFontFromFile(@"C:\Windows\Fonts\arial.ttf"); // フォールバック
-            }
+            // コード用フォント
+            fontData = LoadFontFromFile(@"C:\Windows\Fonts\consola.ttf")
+                    ?? LoadFontFromFile(@"C:\Windows\Fonts\cour.ttf")
+                    ?? LoadFontFromFile(@"C:\Windows\Fonts\arial.ttf");
         }
         else
         {
-            // 日本語対応フォント - TTF ファイルを優先（TTC より確実）
-            var fontPaths = new (string path, bool isTtc, int ttcIndex)[]
-            {
-                // 1. TTF ファイル（最も確実）
-                (@"C:\Windows\Fonts\msgothic.ttf", false, 0),   // MS Gothic TTF版
-                (@"C:\Windows\Fonts\meiryo.ttf", false, 0),     // メイリオ TTF版
-                (@"C:\Windows\Fonts\yugothic.ttf", false, 0),   // 游ゴシック TTF版
-                (@"C:\Windows\Fonts\arial.ttf", false, 0),      // Arial（フォールバック）
-                
-                // 2. TTC ファイル（TTF がない場合）
-                (@"C:\Windows\Fonts\msgothic.ttc", true, 0),    // MS Gothic
-                (@"C:\Windows\Fonts\meiryo.ttc", true, 0),      // メイリオ
-                (@"C:\Windows\Fonts\YuGothR.ttc", true, 0),     // 游ゴシック Regular
-                (@"C:\Windows\Fonts\YuGothM.ttc", true, 0),     // 游ゴシック Medium
-                
-                // 3. その他の多言語フォント
-                (@"C:\Windows\Fonts\seguisym.ttf", false, 0),   // Segoe UI Symbol
-                (@"C:\Windows\Fonts\arialuni.ttf", false, 0),   // Arial Unicode MS
-            };
-
-            foreach (var (path, isTtc, ttcIndex) in fontPaths)
-            {
-                if (!File.Exists(path))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    if (isTtc)
-                    {
-                        fontData = LoadFontFromTtc(path, ttcIndex);
-                    }
-                    else
-                    {
-                        fontData = LoadFontFromFile(path);
-                    }
-                    
-                    if (fontData != null && fontData.Length > 0)
-                    {
-                        _loadedFontPath = path;
-                        System.Diagnostics.Debug.WriteLine($"[FontResolver] フォント読み込み成功: {path} ({fontData.Length} bytes)");
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[FontResolver] フォント読み込み失敗: {path} - {ex.Message}");
-                }
-            }
+            // 日本語対応フォント - 確実に動作する順序で試行
+            // 1. 単独 TTF ファイル（TTC より確実）
+            // 2. TTC からの最初のフォント
             
-            // 最終フォールバック: 何も見つからない場合は Arial を使用
+            // BIZ UD Gothic TTF（Windows 10以降）
+            fontData = LoadFontFromTtcSimple(@"C:\Windows\Fonts\BIZ-UDGothicR.ttc");
+            
             if (fontData == null)
             {
+                // MS Gothic TTC
+                fontData = LoadFontFromTtcSimple(@"C:\Windows\Fonts\msgothic.ttc");
+            }
+            
+            if (fontData == null)
+            {
+                // メイリオ TTC
+                fontData = LoadFontFromTtcSimple(@"C:\Windows\Fonts\meiryo.ttc");
+            }
+            
+            if (fontData == null)
+            {
+                // 游ゴシック TTC
+                fontData = LoadFontFromTtcSimple(@"C:\Windows\Fonts\YuGothR.ttc");
+            }
+            
+            if (fontData == null)
+            {
+                // Arial（フォールバック - 日本語は表示できないが動作する）
                 fontData = LoadFontFromFile(@"C:\Windows\Fonts\arial.ttf");
-                if (fontData != null)
-                {
-                    _loadedFontPath = @"C:\Windows\Fonts\arial.ttf";
-                    System.Diagnostics.Debug.WriteLine($"[FontResolver] フォールバック: arial.ttf を使用");
-                }
             }
         }
 
@@ -757,27 +719,7 @@ public class JapaneseFontResolver : IFontResolver
 
         try
         {
-            var data = File.ReadAllBytes(path);
-            // 有効な TTF かどうか簡易チェック（最初の4バイト）
-            if (data.Length >= 4)
-            {
-                var tag = System.Text.Encoding.ASCII.GetString(data, 0, 4);
-                // TTF: 0x00010000 または "OTTO" (OpenType) または "true" (TrueType)
-                if (data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00)
-                {
-                    return data;
-                }
-                if (tag == "OTTO" || tag == "true")
-                {
-                    return data;
-                }
-                // TTCでないことを確認
-                if (tag != "ttcf")
-                {
-                    return data; // それでも使用を試みる
-                }
-            }
-            return data;
+            return File.ReadAllBytes(path);
         }
         catch
         {
@@ -786,9 +728,11 @@ public class JapaneseFontResolver : IFontResolver
     }
 
     /// <summary>
-    /// TTC ファイルから指定されたインデックスのフォントを抽出します
+    /// TTC ファイルから最初のフォントを抽出します（シンプル版）
+    /// TTC ヘッダーを解析し、最初のフォントのオフセットテーブルから
+    /// 必要なテーブルをすべてコピーして新しい TTF を構築します
     /// </summary>
-    private byte[]? LoadFontFromTtc(string path, int fontIndex)
+    private byte[]? LoadFontFromTtcSimple(string path)
     {
         if (!File.Exists(path))
         {
@@ -798,159 +742,120 @@ public class JapaneseFontResolver : IFontResolver
         try
         {
             var ttcData = File.ReadAllBytes(path);
-            var ttfData = ExtractTtfFromTtc(ttcData, fontIndex);
             
-            if (ttfData != null && ttfData.Length > 0)
-            {
-                System.Diagnostics.Debug.WriteLine($"[FontResolver] TTC から TTF 抽出成功: {path} index={fontIndex} ({ttfData.Length} bytes)");
-                return ttfData;
-            }
-            
-            return null;
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[FontResolver] TTC 読み込みエラー: {path} - {ex.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// TTC バイナリから TTF を抽出します
-    /// </summary>
-    private byte[]? ExtractTtfFromTtc(byte[] ttcData, int fontIndex)
-    {
-        try
-        {
-            // TTC ヘッダーを読み込み
+            // TTC ヘッダーを確認
             if (ttcData.Length < 12)
             {
                 return null;
             }
-
-            // TTC タグを確認 ("ttcf")
+            
             var tag = System.Text.Encoding.ASCII.GetString(ttcData, 0, 4);
             if (tag != "ttcf")
             {
-                // TTC ではなく TTF の可能性 - そのまま返す
+                // TTC ではない場合はそのまま返す
                 return ttcData;
             }
-
-            // フォント数を取得（オフセット 8、4バイト、ビッグエンディアン）
-            var numFonts = ReadBigEndianUInt32(ttcData, 8);
-            if (fontIndex >= numFonts)
-            {
-                fontIndex = 0;
-            }
-
-            // 指定されたフォントのオフセットを取得
-            var offsetTableOffset = ReadBigEndianUInt32(ttcData, 12 + (fontIndex * 4));
-
-            // TTF データを構築
-            return BuildTtfFromOffset(ttcData, (int)offsetTableOffset);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[FontResolver] TTF 抽出エラー: {ex.Message}");
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// TTC 内のオフセットから TTF を構築します
-    /// </summary>
-    private byte[]? BuildTtfFromOffset(byte[] ttcData, int offsetTableOffset)
-    {
-        try
-        {
+            
+            // 最初のフォントのオフセットを取得
+            var firstFontOffset = ReadBigEndianUInt32(ttcData, 12);
+            
             // オフセットテーブルを読み込み
-            if (ttcData.Length < offsetTableOffset + 12)
+            if (ttcData.Length < firstFontOffset + 12)
             {
                 return null;
             }
-
-            // テーブル数を取得
-            var numTables = ReadBigEndianUInt16(ttcData, offsetTableOffset + 4);
-
-            // 各テーブルの情報を収集
-            var tables = new List<(string tag, uint checksum, uint offset, uint length)>();
-            var tableRecordOffset = offsetTableOffset + 12;
-
+            
+            // スケーラータイプ（4バイト）
+            var scalerType = ReadBigEndianUInt32(ttcData, (int)firstFontOffset);
+            var numTables = ReadBigEndianUInt16(ttcData, (int)firstFontOffset + 4);
+            var searchRange = ReadBigEndianUInt16(ttcData, (int)firstFontOffset + 6);
+            var entrySelector = ReadBigEndianUInt16(ttcData, (int)firstFontOffset + 8);
+            var rangeShift = ReadBigEndianUInt16(ttcData, (int)firstFontOffset + 10);
+            
+            // テーブルディレクトリを読み込み（各16バイト）
+            var tableRecords = new List<(string tag, uint checksum, uint offset, uint length)>();
+            var tableDirectoryStart = (int)firstFontOffset + 12;
+            
             for (int i = 0; i < numTables; i++)
             {
-                var recordOffset = tableRecordOffset + (i * 16);
+                var recordOffset = tableDirectoryStart + (i * 16);
                 if (ttcData.Length < recordOffset + 16)
                 {
                     return null;
                 }
-
+                
                 var tableTag = System.Text.Encoding.ASCII.GetString(ttcData, recordOffset, 4);
                 var checksum = ReadBigEndianUInt32(ttcData, recordOffset + 4);
                 var offset = ReadBigEndianUInt32(ttcData, recordOffset + 8);
                 var length = ReadBigEndianUInt32(ttcData, recordOffset + 12);
-
-                tables.Add((tableTag, checksum, offset, length));
+                
+                tableRecords.Add((tableTag, checksum, offset, length));
             }
-
+            
             // 新しい TTF を構築
             using var ms = new MemoryStream();
             using var writer = new BinaryWriter(ms);
-
-            // オフセットテーブルを書き込み
-            writer.Write(ttcData, offsetTableOffset, 12);
-
-            // 新しいテーブルレコードのオフセットを計算
-            var newDataOffset = (uint)(12 + (numTables * 16));
-            newDataOffset = (newDataOffset + 3) & ~3u; // 4バイト境界に揃える
-
-            // テーブルレコードを書き込み
-            var currentOffset = newDataOffset;
-            var tableData = new List<byte[]>();
-
-            foreach (var (tag, checksum, offset, length) in tables)
+            
+            // オフセットテーブルヘッダーを書き込み
+            WriteBigEndianUInt32(writer, scalerType);
+            WriteBigEndianUInt16(writer, numTables);
+            WriteBigEndianUInt16(writer, searchRange);
+            WriteBigEndianUInt16(writer, entrySelector);
+            WriteBigEndianUInt16(writer, rangeShift);
+            
+            // 新しいテーブルオフセットを計算
+            var headerSize = 12 + (numTables * 16);
+            var currentDataOffset = (uint)headerSize;
+            
+            // 4バイト境界に揃える
+            currentDataOffset = (currentDataOffset + 3) & ~3u;
+            
+            var newOffsets = new List<uint>();
+            foreach (var (_, _, _, length) in tableRecords)
             {
-                // タグを書き込み
-                writer.Write(System.Text.Encoding.ASCII.GetBytes(tag));
-                // チェックサムを書き込み
-                WriteBigEndianUInt32(writer, checksum);
-                // 新しいオフセットを書き込み
-                WriteBigEndianUInt32(writer, currentOffset);
-                // 長さを書き込み
-                WriteBigEndianUInt32(writer, length);
-
-                // テーブルデータを抽出
-                var data = new byte[length];
-                Array.Copy(ttcData, offset, data, 0, length);
-                tableData.Add(data);
-
-                // 次のオフセットを計算（4バイト境界）
-                currentOffset += length;
-                currentOffset = (currentOffset + 3) & ~3u;
+                newOffsets.Add(currentDataOffset);
+                currentDataOffset += length;
+                currentDataOffset = (currentDataOffset + 3) & ~3u; // 4バイト境界
             }
-
+            
+            // テーブルディレクトリを書き込み
+            for (int i = 0; i < tableRecords.Count; i++)
+            {
+                var (tableTag, checksum, _, length) = tableRecords[i];
+                writer.Write(System.Text.Encoding.ASCII.GetBytes(tableTag));
+                WriteBigEndianUInt32(writer, checksum);
+                WriteBigEndianUInt32(writer, newOffsets[i]);
+                WriteBigEndianUInt32(writer, length);
+            }
+            
             // パディングを追加
-            var padding = newDataOffset - (12 + (numTables * 16));
-            for (int i = 0; i < padding; i++)
+            var paddingNeeded = (int)(newOffsets[0] - ms.Position);
+            for (int i = 0; i < paddingNeeded; i++)
             {
                 writer.Write((byte)0);
             }
-
+            
             // テーブルデータを書き込み
-            foreach (var data in tableData)
+            for (int i = 0; i < tableRecords.Count; i++)
             {
-                writer.Write(data);
-                // 4バイト境界にパディング
-                var tablePadding = (4 - (data.Length % 4)) % 4;
-                for (int i = 0; i < tablePadding; i++)
+                var (_, _, offset, length) = tableRecords[i];
+                
+                // データをコピー
+                writer.Write(ttcData, (int)offset, (int)length);
+                
+                // 4バイト境界パディング
+                var tablePadding = (4 - ((int)length % 4)) % 4;
+                for (int j = 0; j < tablePadding; j++)
                 {
                     writer.Write((byte)0);
                 }
             }
-
+            
             return ms.ToArray();
         }
-        catch
+        catch (Exception ex)
         {
+            System.Diagnostics.Debug.WriteLine($"[FontResolver] TTC 読み込みエラー: {path} - {ex.Message}");
             return null;
         }
     }
@@ -969,6 +874,12 @@ public class JapaneseFontResolver : IFontResolver
     {
         writer.Write((byte)((value >> 24) & 0xFF));
         writer.Write((byte)((value >> 16) & 0xFF));
+        writer.Write((byte)((value >> 8) & 0xFF));
+        writer.Write((byte)(value & 0xFF));
+    }
+
+    private static void WriteBigEndianUInt16(BinaryWriter writer, ushort value)
+    {
         writer.Write((byte)((value >> 8) & 0xFF));
         writer.Write((byte)(value & 0xFF));
     }
