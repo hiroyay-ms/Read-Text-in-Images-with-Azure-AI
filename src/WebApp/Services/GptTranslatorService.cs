@@ -1,6 +1,8 @@
+using System.Text.Json;
 using Azure;
-using Azure.AI.FormRecognizer.DocumentAnalysis;
+using Azure.AI.DocumentIntelligence;
 using Azure.AI.OpenAI;
+using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
@@ -11,14 +13,16 @@ namespace WebApp.Services;
 
 /// <summary>
 /// GPT-4o を使用したドキュメント翻訳サービスの実装
+/// Document Intelligence v4.0 の Markdown 出力と Figures API を使用して画像を保持
 /// </summary>
 public class GptTranslatorService : IGptTranslatorService
 {
     private readonly AzureOpenAIClient _openAIClient;
-    private readonly DocumentAnalysisClient _documentClient;
+    private readonly DocumentIntelligenceClient _documentIntelligenceClient;
     private readonly BlobServiceClient _blobServiceClient;
     private readonly string _deploymentName;
     private readonly string _translatedContainerName;
+    private readonly string _documentIntelligenceEndpoint;
     private readonly ILogger<GptTranslatorService> _logger;
 
     // サポートされているファイル拡張子
@@ -46,8 +50,6 @@ public class GptTranslatorService : IGptTranslatorService
         { "it", "Italiano" },
         { "pt", "Português" },
         { "ru", "Русский" },
-        { "ar", "العربية" },
-        { "th", "ไทย" },
         { "vi", "Tiếng Việt" },
         { "id", "Bahasa Indonesia" },
         { "ms", "Bahasa Melayu" },
@@ -59,8 +61,6 @@ public class GptTranslatorService : IGptTranslatorService
         { "da", "Dansk" },
         { "fi", "Suomi" },
         { "el", "Ελληνικά" },
-        { "he", "עברית" },
-        { "hi", "हिन्दी" },
         { "hu", "Magyar" },
         { "no", "Norsk" },
         { "ro", "Română" },
@@ -70,17 +70,19 @@ public class GptTranslatorService : IGptTranslatorService
 
     public GptTranslatorService(
         IConfiguration configuration,
-        DocumentAnalysisClient documentClient,
         ILogger<GptTranslatorService> logger)
     {
         _logger = logger;
-        _documentClient = documentClient;
 
         // Azure OpenAI の設定
         var openAIEndpoint = configuration["AzureOpenAI:Endpoint"]
             ?? throw new InvalidOperationException("AzureOpenAI:Endpoint が設定されていません");
         _deploymentName = configuration["AzureOpenAI:DeploymentName"]
             ?? throw new InvalidOperationException("AzureOpenAI:DeploymentName が設定されていません");
+
+        // Document Intelligence の設定
+        _documentIntelligenceEndpoint = configuration["DocumentIntelligence:Endpoint"]
+            ?? throw new InvalidOperationException("DocumentIntelligence:Endpoint が設定されていません");
 
         // Azure Storage の設定
         var storageAccountName = configuration["AzureStorage:AccountName"]
@@ -95,12 +97,17 @@ public class GptTranslatorService : IGptTranslatorService
             new Uri(openAIEndpoint),
             credential);
 
+        _documentIntelligenceClient = new DocumentIntelligenceClient(
+            new Uri(_documentIntelligenceEndpoint),
+            credential);
+
         var blobStorageUri = new Uri($"https://{storageAccountName}.blob.core.windows.net");
         _blobServiceClient = new BlobServiceClient(blobStorageUri, credential);
 
         _logger.LogInformation(
-            "GptTranslatorService が初期化されました。OpenAI: {Endpoint}, Storage: {StorageAccount}, Container: {Container}",
+            "GptTranslatorService が初期化されました。OpenAI: {OpenAIEndpoint}, DocumentIntelligence: {DIEndpoint}, Storage: {StorageAccount}, Container: {Container}",
             openAIEndpoint,
+            _documentIntelligenceEndpoint,
             storageAccountName,
             _translatedContainerName);
     }
@@ -214,6 +221,7 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// ドキュメントを翻訳します
+    /// Document Intelligence v4.0 の Markdown 出力を使用し、画像を保持
     /// </summary>
     public async Task<GptTranslationResult> TranslateDocumentAsync(
         IFormFile document,
@@ -239,44 +247,79 @@ public class GptTranslatorService : IGptTranslatorService
                     document.FileName);
             }
 
-            // 2. Document Intelligence でテキスト抽出
-            _logger.LogInformation("Document Intelligence でテキストを抽出中...");
-            
+            // 2. Document Intelligence v4.0 で Markdown 形式でテキスト抽出（画像情報を含む）
+            _logger.LogInformation("Document Intelligence v4.0 で Markdown 形式でテキストと画像を抽出中...");
+
             using var stream = document.OpenReadStream();
-            var analyzeOperation = await _documentClient.AnalyzeDocumentAsync(
+            using var memoryStream = new MemoryStream();
+            await stream.CopyToAsync(memoryStream, cancellationToken);
+            memoryStream.Position = 0;
+
+            // Base64 エンコードしたドキュメントを送信
+            var base64Content = Convert.ToBase64String(memoryStream.ToArray());
+
+            using var requestContent = RequestContent.Create(new
+            {
+                base64Source = base64Content
+            });
+
+            // Markdown 形式で出力し、Figures も取得
+            // RequestContext を使用して追加パラメータを指定
+            var requestContext = new RequestContext();
+            var operation = await _documentIntelligenceClient.AnalyzeDocumentAsync(
                 WaitUntil.Completed,
                 "prebuilt-layout",
-                stream,
-                cancellationToken: cancellationToken);
+                requestContent,
+                pages: null,
+                locale: null,
+                stringIndexType: null,
+                features: null,
+                queryFields: null,
+                outputContentFormat: "markdown",
+                output: null,
+                context: requestContext);
 
-            var analyzeResult = analyzeOperation.Value;
+            // レスポンスを JSON としてパース
+            var responseJson = JsonDocument.Parse(operation.Value.ToStream());
+            var analyzeResult = responseJson.RootElement;
 
-            // テキストを抽出（Markdown 形式で構造を保持）
-            var extractedText = ExtractTextWithStructure(analyzeResult);
+            // Markdown テキストを取得（図は <figure> タグで埋め込まれている）
+            var extractedMarkdown = analyzeResult.GetProperty("content").GetString() ?? string.Empty;
 
-            if (string.IsNullOrWhiteSpace(extractedText))
+            if (string.IsNullOrWhiteSpace(extractedMarkdown))
             {
                 return GptTranslationResult.Failure("ドキュメントからテキストを抽出できませんでした。", document.FileName);
             }
 
-            _logger.LogInformation("テキスト抽出完了。文字数: {Length}", extractedText.Length);
+            _logger.LogInformation("Markdown 抽出完了。文字数: {Length}", extractedMarkdown.Length);
 
-            // 3. 画像を抽出して Blob Storage に保存
+            // 3. 図（Figures）を抽出して Blob Storage に保存
             var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
             var documentId = Path.GetFileNameWithoutExtension(document.FileName);
-            var imageUrls = await ExtractAndSaveImagesAsync(
-                analyzeResult,
+            var operationId = operation.Id;
+
+            // Figures 情報を取得
+            var figures = analyzeResult.TryGetProperty("figures", out var figuresElement)
+                ? figuresElement.EnumerateArray().ToList()
+                : new List<JsonElement>();
+
+            var imageUrls = await ExtractAndSaveFiguresAsync(
+                figures,
+                operationId,
                 documentId,
                 timestamp,
                 cancellationToken);
 
             _logger.LogInformation("画像抽出完了。画像数: {Count}", imageUrls.Count);
 
-            // 4. GPT-4o で翻訳
+            // 4. Markdown 内の図参照を Blob URL に置換
+            var markdownWithImages = ReplaceFigureReferences(extractedMarkdown, figures, imageUrls);
+
+            // 5. GPT-4o で翻訳（Markdown 形式を保持）
             _logger.LogInformation("GPT-4o で翻訳中...");
 
-            var translationResult = await TranslateWithChunkingAsync(
-                extractedText,
+            var translationResult = await TranslateMarkdownAsync(
+                markdownWithImages,
                 targetLanguage,
                 options,
                 cancellationToken);
@@ -286,12 +329,9 @@ public class GptTranslatorService : IGptTranslatorService
                 return translationResult;
             }
 
-            // 5. 画像プレースホルダーを実際の URL に置換
-            var translatedText = ReplaceImagePlaceholders(translationResult.TranslatedText, imageUrls);
-
             // 6. 翻訳結果を Blob Storage に保存
             var blobName = $"{documentId}_{targetLanguage}_{timestamp}.md";
-            var blobUrl = await SaveTranslationResultAsync(blobName, translatedText, cancellationToken);
+            var blobUrl = await SaveTranslationResultAsync(blobName, translationResult.TranslatedText, cancellationToken);
 
             var completedTime = DateTime.UtcNow;
 
@@ -302,8 +342,8 @@ public class GptTranslatorService : IGptTranslatorService
 
             return GptTranslationResult.Success(
                 originalFileName: document.FileName,
-                originalText: extractedText,
-                translatedText: translatedText,
+                originalText: markdownWithImages,
+                translatedText: translationResult.TranslatedText,
                 sourceLanguage: options.SourceLanguage ?? "auto",
                 targetLanguage: targetLanguage,
                 blobName: blobName,
@@ -359,174 +399,175 @@ public class GptTranslatorService : IGptTranslatorService
     #region Private Methods
 
     /// <summary>
-    /// Document Intelligence の結果から構造を保持してテキストを抽出します
+    /// Document Intelligence の Figures を抽出して Blob Storage に保存します
     /// </summary>
-    private string ExtractTextWithStructure(AnalyzeResult analyzeResult)
-    {
-        var sb = new System.Text.StringBuilder();
-
-        foreach (var paragraph in analyzeResult.Paragraphs)
-        {
-            var role = paragraph.Role?.ToString();
-
-            // 見出しの処理
-            if (role != null && role.StartsWith("heading", StringComparison.OrdinalIgnoreCase))
-            {
-                // heading レベルを取得（heading1, heading2, etc.）
-                var level = 1;
-                if (role.Length > 7 && int.TryParse(role.Substring(7), out var parsedLevel))
-                {
-                    level = parsedLevel;
-                }
-                sb.AppendLine();
-                sb.AppendLine($"{new string('#', level)} {paragraph.Content}");
-                sb.AppendLine();
-            }
-            else if (role == "title")
-            {
-                sb.AppendLine();
-                sb.AppendLine($"# {paragraph.Content}");
-                sb.AppendLine();
-            }
-            else if (role == "sectionHeading")
-            {
-                sb.AppendLine();
-                sb.AppendLine($"## {paragraph.Content}");
-                sb.AppendLine();
-            }
-            else
-            {
-                // 通常の段落
-                sb.AppendLine(paragraph.Content);
-                sb.AppendLine();
-            }
-        }
-
-        // テーブルの処理
-        foreach (var table in analyzeResult.Tables)
-        {
-            sb.AppendLine();
-            sb.AppendLine(ConvertTableToMarkdown(table));
-            sb.AppendLine();
-        }
-
-        return sb.ToString().Trim();
-    }
-
-    /// <summary>
-    /// テーブルを Markdown 形式に変換します
-    /// </summary>
-    private string ConvertTableToMarkdown(DocumentTable table)
-    {
-        var rows = new Dictionary<int, Dictionary<int, string>>();
-        var maxCol = 0;
-
-        foreach (var cell in table.Cells)
-        {
-            if (!rows.ContainsKey(cell.RowIndex))
-            {
-                rows[cell.RowIndex] = new Dictionary<int, string>();
-            }
-            rows[cell.RowIndex][cell.ColumnIndex] = cell.Content;
-            maxCol = Math.Max(maxCol, cell.ColumnIndex);
-        }
-
-        var sb = new System.Text.StringBuilder();
-        var sortedRows = rows.Keys.OrderBy(k => k).ToList();
-
-        foreach (var rowIndex in sortedRows)
-        {
-            var row = rows[rowIndex];
-            sb.Append("|");
-            for (int col = 0; col <= maxCol; col++)
-            {
-                var content = row.ContainsKey(col) ? row[col].Replace("|", "\\|") : "";
-                sb.Append($" {content} |");
-            }
-            sb.AppendLine();
-
-            // ヘッダー行の後にセパレータを追加
-            if (rowIndex == 0)
-            {
-                sb.Append("|");
-                for (int col = 0; col <= maxCol; col++)
-                {
-                    sb.Append(" --- |");
-                }
-                sb.AppendLine();
-            }
-        }
-
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// 画像を抽出して Blob Storage に保存します
-    /// </summary>
-    private async Task<List<string>> ExtractAndSaveImagesAsync(
-        AnalyzeResult analyzeResult,
+    private async Task<List<string>> ExtractAndSaveFiguresAsync(
+        List<JsonElement> figures,
+        string operationId,
         string documentId,
         string timestamp,
         CancellationToken cancellationToken)
     {
         var imageUrls = new List<string>();
 
-        // Document Intelligence の prebuilt-layout モデルでは直接画像を取得できないため、
-        // 画像抽出は将来的な拡張として実装予定
-        // 現時点では空のリストを返す
+        if (figures == null || figures.Count == 0)
+        {
+            _logger.LogInformation("ドキュメントに画像が含まれていません");
+            return imageUrls;
+        }
 
-        _logger.LogInformation("画像抽出: 現在の実装では画像抽出はサポートされていません");
+        var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+        await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+
+        foreach (var figure in figures)
+        {
+            try
+            {
+                // Figure ID を使用して画像を取得
+                var figureId = figure.GetProperty("id").GetString() ?? "";
+
+                _logger.LogInformation("図を取得中: {FigureId}", figureId);
+
+                // GetAnalyzeResultFigure API を使用して画像を取得
+                var figureResponse = await _documentIntelligenceClient.GetAnalyzeResultFigureAsync(
+                    "prebuilt-layout",
+                    operationId,
+                    figureId,
+                    cancellationToken);
+
+                if (figureResponse != null && figureResponse.Value != null)
+                {
+                    // 画像を Blob Storage に保存
+                    var safeImageName = figureId.Replace(".", "_");
+                    var imageName = $"images/{documentId}_{timestamp}/{safeImageName}.png";
+                    var blobClient = containerClient.GetBlobClient(imageName);
+
+                    using var imageStream = figureResponse.Value.ToStream();
+                    await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
+
+                    // SAS トークン付き URL を生成（24時間有効）
+                    string imageUrl;
+                    if (blobClient.CanGenerateSasUri)
+                    {
+                        var sasBuilder = new BlobSasBuilder
+                        {
+                            BlobContainerName = _translatedContainerName,
+                            BlobName = imageName,
+                            Resource = "b",
+                            ExpiresOn = DateTimeOffset.UtcNow.AddHours(24)
+                        };
+                        sasBuilder.SetPermissions(BlobSasPermissions.Read);
+                        imageUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
+                    }
+                    else
+                    {
+                        imageUrl = blobClient.Uri.ToString();
+                    }
+
+                    imageUrls.Add(imageUrl);
+                    _logger.LogInformation("図を保存しました: {ImageName}", imageName);
+                }
+            }
+            catch (Exception ex)
+            {
+                var errorFigureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() : "unknown";
+                _logger.LogWarning(ex, "図の取得に失敗しました: {FigureId}", errorFigureId);
+                // 個別の画像取得失敗は処理を継続
+            }
+        }
 
         return imageUrls;
     }
 
     /// <summary>
-    /// 長文を分割して翻訳します
+    /// Markdown 内の図参照を実際の Blob URL に置換します
     /// </summary>
-    private async Task<GptTranslationResult> TranslateWithChunkingAsync(
-        string text,
+    private string ReplaceFigureReferences(string markdown, List<JsonElement> figures, List<string> imageUrls)
+    {
+        if (figures == null || figures.Count == 0 || imageUrls.Count == 0)
+        {
+            return markdown;
+        }
+
+        var result = markdown;
+
+        // Document Intelligence v4.0 の Markdown では図は以下の形式で出力される:
+        // <figure>
+        // <figcaption>キャプション</figcaption>
+        // ![](figures/0)
+        // FigureContent="..."
+        // </figure>
+        //
+        // または単純に:
+        // ![](figures/0)
+        // ![](figures/1.1)  <- pageNumber.figureIndex 形式
+
+        for (int i = 0; i < Math.Min(figures.Count, imageUrls.Count); i++)
+        {
+            var figure = figures[i];
+            var figureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "";
+            var imageUrl = imageUrls[i];
+
+            // figures/ID 形式の参照を実際の URL に置換
+            // 例: figures/1.1, figures/2.1 など
+            result = result.Replace($"![]({figureId})", $"![図{i + 1}]({imageUrl})");
+            result = result.Replace($"](figures/{figureId})", $"]({imageUrl})");
+            
+            // 単純な連番形式も対応
+            result = result.Replace($"![](figures/{i})", $"![図{i + 1}]({imageUrl})");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Markdown テキストを翻訳します（構造と画像参照を保持）
+    /// </summary>
+    private async Task<GptTranslationResult> TranslateMarkdownAsync(
+        string markdown,
         string targetLanguage,
         GptTranslationOptions options,
         CancellationToken cancellationToken)
     {
-        // 簡易的なトークン見積もり（日本語は1文字≒1-2トークン、英語は1単語≒1トークン）
-        const int MaxChunkSize = 8000; // 文字数ベースで制限
-        
-        if (text.Length <= MaxChunkSize)
+        // 翻訳用のオプションを調整（Markdown 構造を保持するよう指示を追加）
+        var markdownOptions = new GptTranslationOptions
         {
-            // 分割不要
-            return await TranslateTextAsync(text, targetLanguage, options, cancellationToken);
+            SourceLanguage = options.SourceLanguage,
+            Tone = options.Tone,
+            Domain = options.Domain,
+            CustomInstructions = options.CustomInstructions,
+            SystemPrompt = options.SystemPrompt,
+            UserPrompt = options.UserPrompt
+        };
+
+        // システムプロンプトに Markdown 保持の指示を追加
+        var defaultSystemPrompt = markdownOptions.GetEffectiveSystemPrompt();
+        if (!defaultSystemPrompt.Contains("Markdown"))
+        {
+            markdownOptions.SystemPrompt = defaultSystemPrompt + @"
+
+重要な追加指示:
+- 入力は Markdown 形式です。Markdown の構造（見出し、リスト、表、コードブロック）をそのまま保持してください
+- 画像参照 ![...](URL) は翻訳せず、そのまま保持してください
+- <figure> タグ内の構造も保持してください
+- HTML タグがある場合は構造を保持してください";
         }
 
-        _logger.LogInformation("長文のため分割翻訳を実行します。総文字数: {Length}", text.Length);
+        // 長文の場合は分割翻訳
+        const int MaxChunkSize = 8000;
 
-        // 段落単位で分割
-        var paragraphs = text.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
-        var chunks = new List<string>();
-        var currentChunk = new System.Text.StringBuilder();
-
-        foreach (var paragraph in paragraphs)
+        if (markdown.Length <= MaxChunkSize)
         {
-            if (currentChunk.Length + paragraph.Length > MaxChunkSize)
-            {
-                if (currentChunk.Length > 0)
-                {
-                    chunks.Add(currentChunk.ToString());
-                    currentChunk.Clear();
-                }
-            }
-            currentChunk.AppendLine(paragraph);
-            currentChunk.AppendLine();
+            return await TranslateTextAsync(markdown, targetLanguage, markdownOptions, cancellationToken);
         }
 
-        if (currentChunk.Length > 0)
-        {
-            chunks.Add(currentChunk.ToString());
-        }
+        _logger.LogInformation("長文のため分割翻訳を実行します。総文字数: {Length}", markdown.Length);
+
+        // Markdown を論理的なブロック単位で分割
+        var chunks = SplitMarkdownIntoChunks(markdown, MaxChunkSize);
 
         _logger.LogInformation("分割数: {ChunkCount}", chunks.Count);
 
-        // 各チャンクを翻訳
         var translatedChunks = new List<string>();
         var totalInputTokens = 0;
         var totalOutputTokens = 0;
@@ -535,9 +576,9 @@ public class GptTranslatorService : IGptTranslatorService
         for (int i = 0; i < chunks.Count; i++)
         {
             _logger.LogInformation("チャンク {Current}/{Total} を翻訳中...", i + 1, chunks.Count);
-            
-            var chunkResult = await TranslateTextAsync(chunks[i], targetLanguage, options, cancellationToken);
-            
+
+            var chunkResult = await TranslateTextAsync(chunks[i], targetLanguage, markdownOptions, cancellationToken);
+
             if (!chunkResult.IsSuccess)
             {
                 return chunkResult;
@@ -553,9 +594,9 @@ public class GptTranslatorService : IGptTranslatorService
 
         return GptTranslationResult.Success(
             originalFileName: "",
-            originalText: text,
+            originalText: markdown,
             translatedText: combinedText,
-            sourceLanguage: options.SourceLanguage ?? "auto",
+            sourceLanguage: markdownOptions.SourceLanguage ?? "auto",
             targetLanguage: targetLanguage,
             blobName: "",
             blobUrl: "",
@@ -567,20 +608,69 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     /// <summary>
-    /// 画像プレースホルダーを実際の URL に置換します
+    /// Markdown を論理的なブロック単位で分割します
+    /// 見出しや段落の境界で分割し、画像参照は分割しない
     /// </summary>
-    private string ReplaceImagePlaceholders(string text, List<string> imageUrls)
+    private List<string> SplitMarkdownIntoChunks(string markdown, int maxChunkSize)
     {
-        var result = text;
-        
-        for (int i = 0; i < imageUrls.Count; i++)
+        var chunks = new List<string>();
+
+        // 見出し（#）で分割
+        var sections = System.Text.RegularExpressions.Regex.Split(
+            markdown,
+            @"(?=^#{1,6}\s)",
+            System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        var currentChunk = new System.Text.StringBuilder();
+
+        foreach (var section in sections)
         {
-            var placeholder = $"[IMAGE:{i + 1:D3}]";
-            var imageMarkdown = $"![図{i + 1}]({imageUrls[i]})";
-            result = result.Replace(placeholder, imageMarkdown);
+            if (string.IsNullOrWhiteSpace(section))
+                continue;
+
+            if (currentChunk.Length + section.Length > maxChunkSize)
+            {
+                if (currentChunk.Length > 0)
+                {
+                    chunks.Add(currentChunk.ToString().Trim());
+                    currentChunk.Clear();
+                }
+
+                // セクション自体が大きすぎる場合はさらに分割
+                if (section.Length > maxChunkSize)
+                {
+                    var paragraphs = section.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var para in paragraphs)
+                    {
+                        if (currentChunk.Length + para.Length > maxChunkSize)
+                        {
+                            if (currentChunk.Length > 0)
+                            {
+                                chunks.Add(currentChunk.ToString().Trim());
+                                currentChunk.Clear();
+                            }
+                        }
+                        currentChunk.AppendLine(para);
+                        currentChunk.AppendLine();
+                    }
+                }
+                else
+                {
+                    currentChunk.Append(section);
+                }
+            }
+            else
+            {
+                currentChunk.Append(section);
+            }
         }
 
-        return result;
+        if (currentChunk.Length > 0)
+        {
+            chunks.Add(currentChunk.ToString().Trim());
+        }
+
+        return chunks;
     }
 
     /// <summary>
@@ -595,7 +685,7 @@ public class GptTranslatorService : IGptTranslatorService
         await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
 
         var blobClient = containerClient.GetBlobClient(blobName);
-        
+
         using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
         await blobClient.UploadAsync(stream, overwrite: true, cancellationToken);
 
@@ -612,7 +702,7 @@ public class GptTranslatorService : IGptTranslatorService
                 ExpiresOn = DateTimeOffset.UtcNow.AddHours(1)
             };
             sasBuilder.SetPermissions(BlobSasPermissions.Read);
-            
+
             return blobClient.GenerateSasUri(sasBuilder).ToString();
         }
 
