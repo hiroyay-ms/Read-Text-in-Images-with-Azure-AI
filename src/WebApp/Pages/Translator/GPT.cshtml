@@ -1,0 +1,346 @@
+@page
+@model GPTModel
+@{
+    ViewData["Title"] = "GPT-4o Document Translator";
+}
+
+<style>
+    body {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+    }
+    #dropArea.drag-over {
+        background-color: #f0e6ff;
+        border-color: #667eea;
+    }
+    .prompt-section {
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .result-link {
+        cursor: pointer;
+        text-decoration: underline;
+    }
+    .result-link:hover {
+        text-decoration: none;
+    }
+</style>
+
+<form method="post" id="mainForm">
+    @Html.AntiForgeryToken()
+</form>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-11">
+            <div class="card shadow">
+                <div class="card-body p-4">
+                    <h1 class="card-title text-center mb-4">
+                        <i class="bi bi-robot"></i> GPT-4o Document Translator
+                    </h1>
+
+                    <!-- プロンプト設定エリア（折りたたみ可能） -->
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 class="mb-0">
+                                <i class="bi bi-chat-square-text"></i> プロンプト設定
+                            </h5>
+                            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#promptSettings" aria-expanded="false" id="promptToggleBtn">
+                                ▽ 展開する
+                            </button>
+                        </div>
+                        
+                        <div class="collapse" id="promptSettings">
+                            <div class="prompt-section">
+                                <!-- システムプロンプト -->
+                                <div class="mb-3">
+                                    <label for="systemPrompt" class="form-label">
+                                        <strong>システムプロンプト</strong>（翻訳者の役割定義）
+                                    </label>
+                                    <textarea class="form-control" 
+                                              id="systemPrompt" 
+                                              rows="6">@Model.DefaultSystemPrompt</textarea>
+                                    <small class="form-text text-muted">
+                                        翻訳者としての振る舞いを定義します。空欄の場合はデフォルトを使用します。
+                                    </small>
+                                </div>
+
+                                <!-- ユーザープロンプト -->
+                                <div class="mb-3">
+                                    <label for="userPrompt" class="form-label">
+                                        <strong>ユーザープロンプト</strong>（翻訳指示）
+                                    </label>
+                                    <textarea class="form-control" 
+                                              id="userPrompt" 
+                                              rows="5">@Model.DefaultUserPromptTemplate</textarea>
+                                    <small class="form-text text-muted">
+                                        <code>{targetLanguage}</code> は選択した翻訳先言語に自動置換されます。
+                                    </small>
+                                </div>
+
+                                <!-- プロンプトリセットボタン -->
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="resetPromptsBtn">
+                                        <i class="bi bi-arrow-counterclockwise"></i> デフォルトに戻す
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <!-- 左側: 入力エリア -->
+                        <div class="col-md-5">
+                            <!-- ファイルアップロードエリア -->
+                            <div class="mb-4">
+                                <h5><i class="bi bi-file-earmark-arrow-up"></i> ドキュメントのアップロード</h5>
+                                <div id="dropArea" class="border border-2 border-dashed rounded p-4 text-center mb-3">
+                                    <p class="mb-2">
+                                        <i class="bi bi-cloud-upload" style="font-size: 2rem;"></i>
+                                    </p>
+                                    <p class="mb-2">ここにドキュメントをドラッグ&ドロップ</p>
+                                    <p class="text-muted mb-3">または</p>
+                                    <p class="mb-0">
+                                        <a href="#" id="fileSelectLink" class="text-decoration-none">
+                                            <i class="bi bi-file-earmark-arrow-up"></i> ファイルの選択
+                                        </a>
+                                    </p>
+                                    <input type="file" 
+                                           class="d-none" 
+                                           id="documentFile" 
+                                           accept=".pdf,.docx">
+                                </div>
+
+                                <!-- 対応形式の説明 -->
+                                <div class="alert alert-info mb-3" role="alert">
+                                    <small>
+                                        <i class="bi bi-info-circle"></i>
+                                        <strong>対応形式:</strong> PDF (.pdf), Word (.docx) のみ（最大 40MB）
+                                    </small>
+                                </div>
+
+                                <!-- ドキュメント情報表示 -->
+                                <div id="documentInfoContainer" class="border rounded p-3 mb-3" style="display: none;">
+                                    <div class="d-flex align-items-center">
+                                        <i id="fileIcon" class="bi bi-file-earmark-text me-3" style="font-size: 2.5rem; color: #667eea;"></i>
+                                        <div class="flex-grow-1">
+                                            <div class="fw-bold text-break" id="fileName"></div>
+                                            <small class="text-muted">
+                                                サイズ: <span id="fileSize"></span> | 
+                                                形式: <span id="fileType"></span>
+                                            </small>
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" id="removeFileBtn">
+                                            <i class="bi bi-x-lg"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 言語選択エリア -->
+                            <div class="mb-4">
+                                <h5><i class="bi bi-translate"></i> 言語設定</h5>
+                                <div class="row mb-3">
+                                    <div class="col-12 mb-3">
+                                        <label for="sourceLanguage" class="form-label">翻訳元言語</label>
+                                        <select class="form-select" id="sourceLanguage">
+                                            <option value="">自動検出</option>
+                                            <!-- JavaScript で動的に追加 -->
+                                        </select>
+                                    </div>
+                                    <div class="col-12">
+                                        <label for="targetLanguage" class="form-label">翻訳先言語 <span class="text-danger">*</span></label>
+                                        <select class="form-select" id="targetLanguage" required>
+                                            <option value="">言語を選択してください</option>
+                                            <!-- JavaScript で動的に追加 -->
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- オプション設定 -->
+                            <div class="mb-4">
+                                <h5><i class="bi bi-gear"></i> オプション</h5>
+                                <div class="row">
+                                    <div class="col-6 mb-3">
+                                        <label for="tone" class="form-label">トーン</label>
+                                        <select class="form-select" id="tone">
+                                            <option value="">デフォルト</option>
+                                            <option value="formal">フォーマル</option>
+                                            <option value="casual">カジュアル</option>
+                                            <option value="technical">技術的</option>
+                                            <option value="academic">学術的</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-6 mb-3">
+                                        <label for="domain" class="form-label">ドメイン</label>
+                                        <select class="form-select" id="domain">
+                                            <option value="">一般</option>
+                                            <option value="legal">法律</option>
+                                            <option value="medical">医療</option>
+                                            <option value="technical">技術</option>
+                                            <option value="business">ビジネス</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 翻訳ボタン -->
+                            <div class="d-grid">
+                                <button class="btn btn-lg text-white" id="translateBtn" disabled style="background-color: #667eea;">
+                                    <i class="bi bi-translate"></i> GPT-4o で翻訳する
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 右側: 結果エリア -->
+                        <div class="col-md-7">
+                            <h5><i class="bi bi-file-text"></i> 翻訳結果</h5>
+                            <div id="resultContainer" class="border rounded p-3 position-relative d-flex align-items-center justify-content-center" style="min-height: 400px; background-color: #f8f9fa;">
+                                <!-- 初期メッセージ -->
+                                <div id="noResultMessage" class="text-center">
+                                    <p class="text-muted mb-2">
+                                        <i class="bi bi-robot" style="font-size: 3rem;"></i>
+                                    </p>
+                                    <p class="text-muted mb-0">ドキュメントをアップロードして翻訳を実行してください</p>
+                                </div>
+                                
+                                <!-- ローディング表示 -->
+                                <div id="loadingInResult" class="text-center" style="display: none;">
+                                    <div class="spinner-border mb-3" role="status" style="color: #667eea; width: 3rem; height: 3rem;">
+                                        <span class="visually-hidden">翻訳中...</span>
+                                    </div>
+                                    <p class="mb-1"><strong>GPT-4o で翻訳しています...</strong></p>
+                                    <p class="text-muted small mb-2">ドキュメントのサイズによっては数分かかる場合があります</p>
+                                    <div class="progress" style="width: 200px; margin: 0 auto;">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"></div>
+                                    </div>
+                                </div>
+                                
+                                <!-- 翻訳成功 -->
+                                <div id="successResult" class="text-center" style="display: none; width: 100%;">
+                                    <div class="mb-3">
+                                        <i class="bi bi-check-circle-fill text-success" style="font-size: 4rem;"></i>
+                                    </div>
+                                    <h5 class="text-success mb-3">翻訳が完了しました！</h5>
+                                    
+                                    <!-- 翻訳情報 -->
+                                    <div class="card mb-3">
+                                        <div class="card-body">
+                                            <h6 class="card-subtitle mb-2 text-muted">翻訳情報</h6>
+                                            <table class="table table-sm mb-0">
+                                                <tr>
+                                                    <th style="width: 40%;">翻訳元:</th>
+                                                    <td id="resultSourceLang"></td>
+                                                </tr>
+                                                <tr>
+                                                    <th>翻訳先:</th>
+                                                    <td id="resultTargetLang"></td>
+                                                </tr>
+                                                <tr>
+                                                    <th>文字数:</th>
+                                                    <td id="resultCharCount"></td>
+                                                </tr>
+                                                <tr>
+                                                    <th>トークン数:</th>
+                                                    <td id="resultTokens"></td>
+                                                </tr>
+                                                <tr>
+                                                    <th>処理時間:</th>
+                                                    <td id="resultDuration"></td>
+                                                </tr>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- アクションボタン -->
+                                    <div class="d-grid gap-2">
+                                        <button class="btn btn-primary" id="viewResultBtn">
+                                            <i class="bi bi-eye"></i> 翻訳結果を見る
+                                        </button>
+                                        <div class="btn-group" role="group">
+                                            <button class="btn btn-outline-secondary" id="downloadMdBtn">
+                                                <i class="bi bi-markdown"></i> Markdown
+                                            </button>
+                                            <button class="btn btn-outline-secondary" id="downloadPdfBtn">
+                                                <i class="bi bi-file-pdf"></i> PDF 変換
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 翻訳結果プレビューモーダル -->
+<div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewModalLabel">
+                    <i class="bi bi-file-text"></i> 翻訳結果プレビュー
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- ローディング -->
+                <div id="previewLoading" class="text-center py-5">
+                    <div class="spinner-border" role="status" style="color: #667eea;">
+                        <span class="visually-hidden">読み込み中...</span>
+                    </div>
+                    <p class="text-muted mt-2">翻訳結果を読み込んでいます...</p>
+                </div>
+                <!-- Markdown/HTML コンテンツ -->
+                <div id="previewContent" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" id="copyMarkdownBtn">
+                    <i class="bi bi-clipboard"></i> Markdown をコピー
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">閉じる</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 隠しフィールド（デフォルトプロンプト保存用） -->
+<input type="hidden" id="defaultSystemPrompt" value="@Model.DefaultSystemPrompt" />
+<input type="hidden" id="defaultUserPrompt" value="@Model.DefaultUserPromptTemplate" />
+<input type="hidden" id="currentBlobName" value="" />
+
+<!-- エラー表示 -->
+<div id="errorArea" class="container mt-3" style="display: none;">
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle"></i>
+        <span id="errorMessage"></span>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+</div>
+
+@section Scripts {
+    <!-- Markdown パーサー -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="~/js/gpt-translator.js"></script>
+    <script>
+        // プロンプト設定の折りたたみボタンテキスト切り替え
+        document.addEventListener('DOMContentLoaded', function() {
+            const promptSettings = document.getElementById('promptSettings');
+            const toggleBtn = document.getElementById('promptToggleBtn');
+            
+            promptSettings.addEventListener('show.bs.collapse', function() {
+                toggleBtn.textContent = '△ 折りたたむ';
+            });
+            
+            promptSettings.addEventListener('hide.bs.collapse', function() {
+                toggleBtn.textContent = '▽ 展開する';
+            });
+        });
+    </script>
+}

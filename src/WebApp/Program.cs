@@ -83,6 +83,12 @@ builder.Services.AddScoped<IGptVisionService, OpenAIVisionService>();
 // Azure Translator サービスの登録
 builder.Services.AddScoped<ITranslatorService, AzureTranslatorService>();
 
+// GPT 翻訳サービスの登録
+builder.Services.AddScoped<IGptTranslatorService, GptTranslatorService>();
+
+// PDF 変換サービスの登録
+builder.Services.AddScoped<IPdfConverterService, PdfConverterService>();
+
 // ヘルスチェックの登録
 builder.Services.AddHealthChecks()
     .AddCheck<DocumentIntelligenceHealthCheck>(

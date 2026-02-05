@@ -1,0 +1,437 @@
+/* PDF 出力用スタイルシート
+ * Markdown から PDF への変換時に使用されるスタイル
+ * 日本語ドキュメント向けに最適化
+ */
+
+/* ========================================
+ * 基本設定
+ * ======================================== */
+:root {
+    --primary-color: #333333;
+    --secondary-color: #666666;
+    --accent-color: #0078d4;
+    --border-color: #dddddd;
+    --background-color: #ffffff;
+    --code-background: #f5f5f5;
+    --font-size-base: 11pt;
+    --line-height-base: 1.8;
+}
+
+/* ========================================
+ * フォント設定
+ * ======================================== */
+@font-face {
+    font-family: 'NotoSansJP';
+    src: local('Noto Sans JP'), local('Noto Sans CJK JP'), local('游ゴシック'), local('Yu Gothic'), local('Meiryo');
+}
+
+body {
+    font-family: 'Noto Sans JP', 'Noto Sans CJK JP', '游ゴシック', 'Yu Gothic', 'メイリオ', 'Meiryo', 'Hiragino Kaku Gothic ProN', sans-serif;
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-base);
+    color: var(--primary-color);
+    background-color: var(--background-color);
+    margin: 0;
+    padding: 20px;
+    text-align: justify;
+    text-justify: inter-ideograph;
+}
+
+/* ========================================
+ * 見出しスタイル
+ * ======================================== */
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Noto Sans JP', 'Yu Gothic', sans-serif;
+    font-weight: bold;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    line-height: 1.4;
+    color: var(--primary-color);
+    page-break-after: avoid;
+}
+
+h1 {
+    font-size: 22pt;
+    border-bottom: 3px solid var(--accent-color);
+    padding-bottom: 0.3em;
+    margin-top: 0;
+}
+
+h2 {
+    font-size: 18pt;
+    border-bottom: 2px solid var(--border-color);
+    padding-bottom: 0.2em;
+}
+
+h3 {
+    font-size: 14pt;
+    border-left: 4px solid var(--accent-color);
+    padding-left: 0.5em;
+}
+
+h4 {
+    font-size: 12pt;
+    color: var(--secondary-color);
+}
+
+h5 {
+    font-size: 11pt;
+    color: var(--secondary-color);
+}
+
+h6 {
+    font-size: 10pt;
+    color: var(--secondary-color);
+}
+
+/* ========================================
+ * 段落スタイル
+ * ======================================== */
+p {
+    margin: 0.8em 0;
+    text-indent: 0;
+    orphans: 3;
+    widows: 3;
+}
+
+/* ========================================
+ * リストスタイル
+ * ======================================== */
+ul, ol {
+    margin: 0.8em 0;
+    padding-left: 2em;
+}
+
+ul ul, ol ol, ul ol, ol ul {
+    margin: 0.3em 0;
+}
+
+li {
+    margin: 0.3em 0;
+    line-height: 1.6;
+}
+
+ul {
+    list-style-type: disc;
+}
+
+ul ul {
+    list-style-type: circle;
+}
+
+ul ul ul {
+    list-style-type: square;
+}
+
+ol {
+    list-style-type: decimal;
+}
+
+ol ol {
+    list-style-type: lower-alpha;
+}
+
+ol ol ol {
+    list-style-type: lower-roman;
+}
+
+/* チェックリスト */
+ul.checklist {
+    list-style-type: none;
+    padding-left: 1.5em;
+}
+
+ul.checklist li::before {
+    content: "☐ ";
+    margin-left: -1.5em;
+}
+
+ul.checklist li.checked::before {
+    content: "☑ ";
+}
+
+/* ========================================
+ * テーブルスタイル
+ * ======================================== */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    page-break-inside: avoid;
+    font-size: 10pt;
+}
+
+thead {
+    background-color: #f8f8f8;
+}
+
+th, td {
+    border: 1px solid var(--border-color);
+    padding: 0.5em 0.8em;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    font-weight: bold;
+    background-color: #f0f0f0;
+}
+
+tr:nth-child(even) {
+    background-color: #fafafa;
+}
+
+caption {
+    caption-side: top;
+    font-weight: bold;
+    margin-bottom: 0.5em;
+    text-align: left;
+}
+
+/* ========================================
+ * コードスタイル
+ * ======================================== */
+code {
+    font-family: 'Consolas', 'Monaco', 'Source Code Pro', 'MS Gothic', monospace;
+    background-color: var(--code-background);
+    padding: 0.15em 0.3em;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: #c7254e;
+}
+
+pre {
+    background-color: var(--code-background);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1em;
+    margin: 1em 0;
+    overflow-x: auto;
+    page-break-inside: avoid;
+    font-size: 9pt;
+    line-height: 1.4;
+}
+
+pre code {
+    background-color: transparent;
+    padding: 0;
+    color: inherit;
+}
+
+/* ========================================
+ * 引用スタイル
+ * ======================================== */
+blockquote {
+    border-left: 4px solid var(--accent-color);
+    margin: 1em 0;
+    padding: 0.5em 1em;
+    background-color: #f9f9f9;
+    color: var(--secondary-color);
+    font-style: italic;
+}
+
+blockquote blockquote {
+    border-left-color: var(--secondary-color);
+}
+
+blockquote p {
+    margin: 0.3em 0;
+}
+
+/* ========================================
+ * リンクスタイル
+ * ======================================== */
+a {
+    color: var(--accent-color);
+    text-decoration: underline;
+}
+
+a:hover {
+    text-decoration: none;
+}
+
+/* ========================================
+ * 画像スタイル
+ * ======================================== */
+img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1em auto;
+    page-break-inside: avoid;
+}
+
+figure {
+    margin: 1em 0;
+    text-align: center;
+    page-break-inside: avoid;
+}
+
+figcaption {
+    font-size: 0.9em;
+    color: var(--secondary-color);
+    margin-top: 0.5em;
+}
+
+/* ========================================
+ * 水平線スタイル
+ * ======================================== */
+hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 2em 0;
+}
+
+/* ========================================
+ * 強調スタイル
+ * ======================================== */
+strong, b {
+    font-weight: bold;
+}
+
+em, i {
+    font-style: italic;
+}
+
+mark {
+    background-color: #fff3cd;
+    padding: 0.1em 0.2em;
+}
+
+del, s {
+    text-decoration: line-through;
+    color: var(--secondary-color);
+}
+
+/* ========================================
+ * ページ区切り設定
+ * ======================================== */
+.page-break {
+    page-break-before: always;
+}
+
+.no-break {
+    page-break-inside: avoid;
+}
+
+/* 見出しの後に改ページしない */
+h1, h2, h3, h4, h5, h6 {
+    page-break-after: avoid;
+}
+
+/* コンテンツブロックは中で改ページしない */
+pre, table, figure, blockquote {
+    page-break-inside: avoid;
+}
+
+/* ========================================
+ * 目次スタイル
+ * ======================================== */
+.toc {
+    border: 1px solid var(--border-color);
+    padding: 1em;
+    margin: 1em 0;
+    background-color: #fafafa;
+}
+
+.toc-title {
+    font-weight: bold;
+    font-size: 14pt;
+    margin-bottom: 0.5em;
+}
+
+.toc ul {
+    list-style-type: none;
+    padding-left: 1em;
+}
+
+.toc li {
+    margin: 0.2em 0;
+}
+
+.toc a {
+    text-decoration: none;
+    color: var(--primary-color);
+}
+
+/* ========================================
+ * アラート・注意書きスタイル
+ * ======================================== */
+.note, .warning, .important, .tip {
+    padding: 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+    page-break-inside: avoid;
+}
+
+.note {
+    background-color: #e7f3ff;
+    border-left: 4px solid #0078d4;
+}
+
+.warning {
+    background-color: #fff4e5;
+    border-left: 4px solid #ff9800;
+}
+
+.important {
+    background-color: #ffebee;
+    border-left: 4px solid #f44336;
+}
+
+.tip {
+    background-color: #e8f5e9;
+    border-left: 4px solid #4caf50;
+}
+
+/* ========================================
+ * ヘッダー・フッタースタイル（印刷用）
+ * ======================================== */
+@page {
+    margin: 20mm 15mm;
+    
+    @top-center {
+        content: element(header);
+    }
+    
+    @bottom-center {
+        content: counter(page) " / " counter(pages);
+        font-size: 9pt;
+        color: var(--secondary-color);
+    }
+}
+
+@page :first {
+    @top-center {
+        content: none;
+    }
+}
+
+/* ========================================
+ * 印刷用メディアクエリ
+ * ======================================== */
+@media print {
+    body {
+        font-size: 10pt;
+        line-height: 1.6;
+        padding: 0;
+    }
+    
+    a {
+        color: var(--primary-color);
+        text-decoration: none;
+    }
+    
+    /* リンクのURLを表示 */
+    a[href^="http"]::after {
+        content: " (" attr(href) ")";
+        font-size: 0.8em;
+        color: var(--secondary-color);
+    }
+    
+    /* 印刷時は背景を非表示 */
+    * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
