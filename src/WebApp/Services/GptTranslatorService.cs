@@ -81,8 +81,8 @@ public class GptTranslatorService : IGptTranslatorService
             ?? throw new InvalidOperationException("AzureOpenAI:DeploymentName が設定されていません");
 
         // Document Intelligence の設定
-        _documentIntelligenceEndpoint = configuration["DocumentIntelligence:Endpoint"]
-            ?? throw new InvalidOperationException("DocumentIntelligence:Endpoint が設定されていません");
+        _documentIntelligenceEndpoint = configuration["DocumentIntelligence_Endpoint"]
+            ?? throw new InvalidOperationException("DocumentIntelligence_Endpoint が設定されていません");
 
         // Azure Storage の設定
         var storageAccountName = configuration["AzureStorage:AccountName"]
