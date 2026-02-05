@@ -667,8 +667,10 @@ public class GptTranslatorService : IGptTranslatorService
     {
         var blobClient = containerClient.GetBlobClient(imageName);
 
+        // マネージド ID 認証の場合は CanGenerateSasUri が false になる
         if (blobClient.CanGenerateSasUri)
         {
+            _logger.LogInformation("アカウントキーで SAS を生成します: {ImageName}", imageName);
             var sasBuilder = new BlobSasBuilder
             {
                 BlobContainerName = _translatedContainerName,
@@ -681,6 +683,7 @@ public class GptTranslatorService : IGptTranslatorService
         }
         else
         {
+            _logger.LogInformation("マネージド ID のためユーザー委任 SAS を生成します: {ImageName}", imageName);
             return await GenerateUserDelegationSasAsync(containerClient, imageName, cancellationToken);
         }
     }
@@ -719,6 +722,8 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// ユーザー委任 SAS を生成します
+    /// マネージド ID 認証時に使用。Storage Blob Data Contributor または
+    /// Storage Blob Delegator ロールが必要です。
     /// </summary>
     private async Task<string> GenerateUserDelegationSasAsync(
         Azure.Storage.Blobs.BlobContainerClient containerClient,
@@ -727,10 +732,14 @@ public class GptTranslatorService : IGptTranslatorService
     {
         try
         {
+            _logger.LogInformation("ユーザー委任キーを取得中...");
+            
             var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(
                 DateTimeOffset.UtcNow,
                 DateTimeOffset.UtcNow.AddHours(24),
                 cancellationToken);
+
+            _logger.LogInformation("ユーザー委任キーを取得しました。SAS を生成中...");
 
             var sasBuilder = new BlobSasBuilder
             {
@@ -747,11 +756,25 @@ public class GptTranslatorService : IGptTranslatorService
                 Sas = sasBuilder.ToSasQueryParameters(userDelegationKey, _blobServiceClient.AccountName)
             };
 
-            return blobUriBuilder.ToUri().ToString();
+            var sasUrl = blobUriBuilder.ToUri().ToString();
+            _logger.LogInformation("ユーザー委任 SAS URL を生成しました: {Url}", sasUrl);
+            return sasUrl;
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 403)
+        {
+            _logger.LogError(ex, 
+                "ユーザー委任 SAS の生成に失敗しました（403 Forbidden）。" +
+                "マネージド ID に 'Storage Blob Data Contributor' または 'Storage Blob Delegator' ロールが必要です。" +
+                "または、Storage Account の 'Allow storage account key access' を有効にしてください。");
+            
+            // フォールバック: 直接 URL を返す（匿名アクセスが有効な場合のみ機能）
+            var directUrl = containerClient.GetBlobClient(blobName).Uri.ToString();
+            _logger.LogWarning("直接 URL を返します（匿名アクセスが無効の場合は表示されません）: {Url}", directUrl);
+            return directUrl;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "ユーザー委任 SAS の生成に失敗しました。直接 URL を返します。");
+            _logger.LogError(ex, "ユーザー委任 SAS の生成中に予期しないエラーが発生しました");
             return containerClient.GetBlobClient(blobName).Uri.ToString();
         }
     }
