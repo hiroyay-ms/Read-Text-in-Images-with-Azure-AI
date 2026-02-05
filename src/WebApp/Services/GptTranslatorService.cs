@@ -317,6 +317,18 @@ public class GptTranslatorService : IGptTranslatorService
             }
 
             _logger.LogInformation("Markdown 抽出完了。文字数: {Length}", extractedMarkdown.Length);
+            
+            // デバッグ: Markdown の最初の500文字をログ出力（図参照の形式を確認）
+            var markdownPreview = extractedMarkdown.Length > 500 ? extractedMarkdown.Substring(0, 500) : extractedMarkdown;
+            _logger.LogDebug("抽出された Markdown (先頭): {Preview}", markdownPreview);
+            
+            // 図参照パターンを検索してログ出力
+            var figurePatterns = System.Text.RegularExpressions.Regex.Matches(extractedMarkdown, @"!\[.*?\]\([^)]+\)");
+            _logger.LogInformation("Markdown 内の図参照パターン数: {Count}", figurePatterns.Count);
+            foreach (System.Text.RegularExpressions.Match match in figurePatterns)
+            {
+                _logger.LogInformation("図参照パターン: {Pattern}", match.Value);
+            }
 
             // 3. 図（Figures）を抽出して Blob Storage に保存
             var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
@@ -324,9 +336,23 @@ public class GptTranslatorService : IGptTranslatorService
             var operationId = operation.Id;
 
             // Figures 情報を取得
-            var figures = analyzeResult.TryGetProperty("figures", out var figuresElement)
+            var hasFigures = analyzeResult.TryGetProperty("figures", out var figuresElement);
+            _logger.LogInformation("figures プロパティの存在: {HasFigures}", hasFigures);
+            
+            var figures = hasFigures
                 ? figuresElement.EnumerateArray().ToList()
                 : new List<JsonElement>();
+            
+            _logger.LogInformation("取得した Figures 数: {Count}", figures.Count);
+            
+            // 各 Figure の ID をログ出力
+            foreach (var fig in figures)
+            {
+                if (fig.TryGetProperty("id", out var figId))
+                {
+                    _logger.LogInformation("Figure ID: {Id}", figId.GetString());
+                }
+            }
 
             var imageUrls = await ExtractAndSaveFiguresAsync(
                 figures,
@@ -335,10 +361,22 @@ public class GptTranslatorService : IGptTranslatorService
                 timestamp,
                 cancellationToken);
 
-            _logger.LogInformation("画像抽出完了。画像数: {Count}", imageUrls.Count);
+            _logger.LogInformation("画像抽出完了。保存された画像数: {Count}", imageUrls.Count);
+            foreach (var url in imageUrls)
+            {
+                _logger.LogInformation("保存された画像 URL: {Url}", url);
+            }
 
             // 4. Markdown 内の図参照を Blob URL に置換
             var markdownWithImages = ReplaceFigureReferences(extractedMarkdown, figures, imageUrls);
+            
+            // 置換後の図参照をログ出力
+            var replacedPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithImages, @"!\[.*?\]\([^)]+\)");
+            _logger.LogInformation("置換後の図参照パターン数: {Count}", replacedPatterns.Count);
+            foreach (System.Text.RegularExpressions.Match match in replacedPatterns)
+            {
+                _logger.LogInformation("置換後の図参照: {Pattern}", match.Value);
+            }
 
             // 5. GPT-4o で翻訳（Markdown 形式を保持）
             _logger.LogInformation("GPT-4o で翻訳中...");
@@ -521,21 +559,20 @@ public class GptTranslatorService : IGptTranslatorService
     {
         if (figures == null || figures.Count == 0 || imageUrls.Count == 0)
         {
+            _logger.LogInformation("図参照の置換をスキップ: figures={FigCount}, imageUrls={UrlCount}", 
+                figures?.Count ?? 0, imageUrls?.Count ?? 0);
             return markdown;
         }
 
         var result = markdown;
+        var replacementCount = 0;
 
         // Document Intelligence v4.0 の Markdown では図は以下の形式で出力される:
-        // <figure>
-        // <figcaption>キャプション</figcaption>
-        // ![](figures/0)
-        // FigureContent="..."
-        // </figure>
-        //
-        // または単純に:
+        // :figure{#figures/0}
+        // または
         // ![](figures/0)
         // ![](figures/1.1)  <- pageNumber.figureIndex 形式
+        // または <figure> タグ内に埋め込まれる
 
         for (int i = 0; i < Math.Min(figures.Count, imageUrls.Count); i++)
         {
@@ -543,14 +580,64 @@ public class GptTranslatorService : IGptTranslatorService
             var figureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "";
             var imageUrl = imageUrls[i];
 
-            // figures/ID 形式の参照を実際の URL に置換
-            // 例: figures/1.1, figures/2.1 など
-            result = result.Replace($"![]({figureId})", $"![図{i + 1}]({imageUrl})");
-            result = result.Replace($"](figures/{figureId})", $"]({imageUrl})");
-            
-            // 単純な連番形式も対応
-            result = result.Replace($"![](figures/{i})", $"![図{i + 1}]({imageUrl})");
+            _logger.LogInformation("図参照の置換を試行: Index={Index}, FigureId={FigureId}", i, figureId);
+
+            // パターン 1: :figure{#figures/ID} 形式（Document Intelligence v4.0 の新形式）
+            var colonPattern = $":figure{{#{figureId}}}";
+            if (result.Contains(colonPattern))
+            {
+                result = result.Replace(colonPattern, $"![図{i + 1}]({imageUrl})");
+                _logger.LogInformation("パターン1で置換: {Pattern}", colonPattern);
+                replacementCount++;
+            }
+
+            // パターン 2: :figure{#figures/ID} 形式（figures/ プレフィックス付き）
+            var colonPatternWithPrefix = $":figure{{#figures/{figureId}}}";
+            if (result.Contains(colonPatternWithPrefix))
+            {
+                result = result.Replace(colonPatternWithPrefix, $"![図{i + 1}]({imageUrl})");
+                _logger.LogInformation("パターン2で置換: {Pattern}", colonPatternWithPrefix);
+                replacementCount++;
+            }
+
+            // パターン 3: ![](figureId) 形式
+            var imgPattern1 = $"![]({figureId})";
+            if (result.Contains(imgPattern1))
+            {
+                result = result.Replace(imgPattern1, $"![図{i + 1}]({imageUrl})");
+                _logger.LogInformation("パターン3で置換: {Pattern}", imgPattern1);
+                replacementCount++;
+            }
+
+            // パターン 4: ![](figures/ID) 形式
+            var imgPattern2 = $"![](figures/{figureId})";
+            if (result.Contains(imgPattern2))
+            {
+                result = result.Replace(imgPattern2, $"![図{i + 1}]({imageUrl})");
+                _logger.LogInformation("パターン4で置換: {Pattern}", imgPattern2);
+                replacementCount++;
+            }
+
+            // パターン 5: ](figures/ID) 形式（既存の画像タグの URL 部分のみ）
+            var urlPattern = $"](figures/{figureId})";
+            if (result.Contains(urlPattern))
+            {
+                result = result.Replace(urlPattern, $"]({imageUrl})");
+                _logger.LogInformation("パターン5で置換: {Pattern}", urlPattern);
+                replacementCount++;
+            }
+
+            // パターン 6: 単純な連番形式 ![](figures/N)
+            var indexPattern = $"![](figures/{i})";
+            if (result.Contains(indexPattern))
+            {
+                result = result.Replace(indexPattern, $"![図{i + 1}]({imageUrl})");
+                _logger.LogInformation("パターン6で置換: {Pattern}", indexPattern);
+                replacementCount++;
+            }
         }
+
+        _logger.LogInformation("図参照の置換完了: {ReplacementCount} 件の置換を実行", replacementCount);
 
         return result;
     }
