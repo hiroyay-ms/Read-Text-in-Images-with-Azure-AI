@@ -286,9 +286,23 @@ app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
             var credential = new DefaultAzureCredential();
             var blobServiceClient = new Azure.Storage.Blobs.BlobServiceClient(new Uri(blobServiceEndpoint), credential);
             
-            // サービスプロパティを取得して接続確認
-            await blobServiceClient.GetPropertiesAsync();
-            warmupLogger.LogInformation("Azure Blob Storage 接続確認成功 (Account: {AccountName})", storageAccountName);
+            // translated コンテナの存在確認（Storage Blob Data Contributor ロールで実行可能）
+            // GetPropertiesAsync は Storage Account Contributor が必要なため、コンテナ操作で確認
+            var translatedContainerName = config["AzureStorage:TranslatedContainerName"] ?? "translated";
+            var containerClient = blobServiceClient.GetBlobContainerClient(translatedContainerName);
+            
+            try
+            {
+                // コンテナの存在確認（なければ作成）
+                await containerClient.CreateIfNotExistsAsync();
+                warmupLogger.LogInformation("Azure Blob Storage 接続確認成功 (Account: {AccountName}, Container: {ContainerName})", 
+                    storageAccountName, translatedContainerName);
+            }
+            catch (Azure.RequestFailedException ex) when (ex.Status == 403)
+            {
+                warmupLogger.LogWarning("Azure Blob Storage 接続確認: コンテナ作成権限なし（既存コンテナへのアクセスは可能な場合があります）");
+                // 403 でも続行（コンテナが既に存在する場合は問題ない）
+            }
             
             // GPT 翻訳サービスの初期化確認
             var gptTranslatorService = sp.GetRequiredService<IGptTranslatorService>();

@@ -47,17 +47,20 @@ public class AzureBlobStorageHealthCheck : IHealthCheck
             var credential = new DefaultAzureCredential();
             var blobServiceClient = new BlobServiceClient(new Uri(blobServiceEndpoint), credential);
 
-            // サービスプロパティを取得して接続確認
-            var properties = await blobServiceClient.GetPropertiesAsync(cancellationToken);
+            // 注意: GetPropertiesAsync は Storage Account Contributor ロールが必要
+            // Storage Blob Data Contributor のみの場合は 403 エラーになる
+            // そのため、コンテナの存在確認で接続を検証する
 
             var containerStatus = new List<string>();
+            var anyContainerChecked = false;
 
-            // 各コンテナの存在確認
+            // 各コンテナの存在確認（これにより接続も確認される）
             if (!string.IsNullOrEmpty(sourceContainer))
             {
                 var sourceContainerClient = blobServiceClient.GetBlobContainerClient(sourceContainer);
                 var sourceExists = await sourceContainerClient.ExistsAsync(cancellationToken);
                 containerStatus.Add($"source({sourceContainer}): {(sourceExists ? "OK" : "未作成")}");
+                anyContainerChecked = true;
             }
 
             if (!string.IsNullOrEmpty(targetContainer))
@@ -65,6 +68,7 @@ public class AzureBlobStorageHealthCheck : IHealthCheck
                 var targetContainerClient = blobServiceClient.GetBlobContainerClient(targetContainer);
                 var targetExists = await targetContainerClient.ExistsAsync(cancellationToken);
                 containerStatus.Add($"target({targetContainer}): {(targetExists ? "OK" : "未作成")}");
+                anyContainerChecked = true;
             }
 
             if (!string.IsNullOrEmpty(translatedContainer))
@@ -72,6 +76,15 @@ public class AzureBlobStorageHealthCheck : IHealthCheck
                 var translatedContainerClient = blobServiceClient.GetBlobContainerClient(translatedContainer);
                 var translatedExists = await translatedContainerClient.ExistsAsync(cancellationToken);
                 containerStatus.Add($"translated({translatedContainer}): {(translatedExists ? "OK" : "未作成")}");
+                anyContainerChecked = true;
+            }
+
+            // コンテナが1つも設定されていない場合は、translated コンテナで確認
+            if (!anyContainerChecked)
+            {
+                var defaultContainer = blobServiceClient.GetBlobContainerClient("translated");
+                var exists = await defaultContainer.ExistsAsync(cancellationToken);
+                containerStatus.Add($"translated: {(exists ? "OK" : "未作成")}");
             }
 
             var statusMessage = $"Azure Blob Storage は正常です（アカウント: {accountName}）";
