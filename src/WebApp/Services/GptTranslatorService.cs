@@ -333,7 +333,10 @@ public class GptTranslatorService : IGptTranslatorService
             // 3. 図（Figures）を抽出して Blob Storage に保存
             var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
             var documentId = Path.GetFileNameWithoutExtension(document.FileName);
+            
+            // Operation ID を取得（Figures API に必要）
             var operationId = operation.Id;
+            _logger.LogInformation("Document Intelligence Operation ID: {OperationId}", operationId);
 
             // Figures 情報を取得
             var hasFigures = analyzeResult.TryGetProperty("figures", out var figuresElement);
@@ -475,9 +478,11 @@ public class GptTranslatorService : IGptTranslatorService
 
         if (figures == null || figures.Count == 0)
         {
-            _logger.LogInformation("ドキュメントに画像が含まれていません");
+            _logger.LogInformation("ドキュメントに画像（figures）が含まれていません");
             return imageUrls;
         }
+
+        _logger.LogInformation("Figures API で {Count} 件の図を取得します。OperationId: {OperationId}", figures.Count, operationId);
 
         var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
         await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
@@ -489,7 +494,8 @@ public class GptTranslatorService : IGptTranslatorService
                 // Figure ID を使用して画像を取得
                 if (!figure.TryGetProperty("id", out var idElement))
                 {
-                    _logger.LogWarning("図に id プロパティがありません。スキップします。");
+                    _logger.LogWarning("図に id プロパティがありません。スキップします。利用可能なプロパティ: {Props}", 
+                        string.Join(", ", figure.EnumerateObject().Select(p => p.Name)));
                     continue;
                 }
                 var figureId = idElement.GetString() ?? "";
@@ -499,23 +505,43 @@ public class GptTranslatorService : IGptTranslatorService
                     continue;
                 }
 
-                _logger.LogInformation("図を取得中: {FigureId}", figureId);
+                _logger.LogInformation("Figures API を呼び出し中: ModelId=prebuilt-layout, OperationId={OperationId}, FigureId={FigureId}", 
+                    operationId, figureId);
 
                 // GetAnalyzeResultFigure API を使用して画像を取得
-                var figureResponse = await _documentIntelligenceClient.GetAnalyzeResultFigureAsync(
-                    "prebuilt-layout",
-                    operationId,
-                    figureId,
-                    cancellationToken);
+                Response<BinaryData> figureResponse;
+                try
+                {
+                    figureResponse = await _documentIntelligenceClient.GetAnalyzeResultFigureAsync(
+                        "prebuilt-layout",
+                        operationId,
+                        figureId,
+                        cancellationToken);
+                }
+                catch (RequestFailedException rfEx)
+                {
+                    _logger.LogError(rfEx, "Figures API 呼び出しに失敗しました。Status: {Status}, ErrorCode: {ErrorCode}, FigureId: {FigureId}", 
+                        rfEx.Status, rfEx.ErrorCode, figureId);
+                    continue;
+                }
 
                 if (figureResponse != null && figureResponse.Value != null)
                 {
+                    var responseBytes = figureResponse.Value.ToArray();
+                    _logger.LogInformation("図のバイナリデータを取得しました: {FigureId}, サイズ: {Size} bytes", figureId, responseBytes.Length);
+
+                    if (responseBytes.Length == 0)
+                    {
+                        _logger.LogWarning("図のバイナリデータが空です: {FigureId}", figureId);
+                        continue;
+                    }
+
                     // 画像を Blob Storage に保存
-                    var safeImageName = figureId.Replace(".", "_");
+                    var safeImageName = figureId.Replace(".", "_").Replace("/", "_");
                     var imageName = $"images/{documentId}_{timestamp}/{safeImageName}.png";
                     var blobClient = containerClient.GetBlobClient(imageName);
 
-                    using var imageStream = figureResponse.Value.ToStream();
+                    using var imageStream = new MemoryStream(responseBytes);
                     await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
 
                     // SAS トークン付き URL を生成（24時間有効）
@@ -534,22 +560,68 @@ public class GptTranslatorService : IGptTranslatorService
                     }
                     else
                     {
-                        imageUrl = blobClient.Uri.ToString();
+                        // SAS が生成できない場合はユーザー委任 SAS を試行
+                        imageUrl = await GenerateUserDelegationSasAsync(containerClient, imageName, cancellationToken);
                     }
 
                     imageUrls.Add(imageUrl);
-                    _logger.LogInformation("図を保存しました: {ImageName}", imageName);
+                    _logger.LogInformation("図を Blob Storage に保存しました: {ImageName}, URL: {Url}", imageName, imageUrl);
+                }
+                else
+                {
+                    _logger.LogWarning("Figures API からレスポンスが取得できませんでした: {FigureId}", figureId);
                 }
             }
             catch (Exception ex)
             {
                 var errorFigureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() : "unknown";
-                _logger.LogWarning(ex, "図の取得に失敗しました: {FigureId}", errorFigureId);
+                _logger.LogError(ex, "図の取得中に予期しないエラーが発生しました: {FigureId}", errorFigureId);
                 // 個別の画像取得失敗は処理を継続
             }
         }
 
+        _logger.LogInformation("Figures API 処理完了。取得成功: {SuccessCount}/{TotalCount}", imageUrls.Count, figures.Count);
+
         return imageUrls;
+    }
+
+    /// <summary>
+    /// ユーザー委任 SAS を生成します
+    /// </summary>
+    private async Task<string> GenerateUserDelegationSasAsync(
+        Azure.Storage.Blobs.BlobContainerClient containerClient,
+        string blobName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var userDelegationKey = await _blobServiceClient.GetUserDelegationKeyAsync(
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddHours(24),
+                cancellationToken);
+
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = containerClient.Name,
+                BlobName = blobName,
+                Resource = "b",
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(24)
+            };
+            sasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+            var blobUriBuilder = new BlobUriBuilder(containerClient.GetBlobClient(blobName).Uri)
+            {
+                Sas = sasBuilder.ToSasQueryParameters(userDelegationKey, _blobServiceClient.AccountName)
+            };
+
+            return blobUriBuilder.ToUri().ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ユーザー委任 SAS の生成に失敗しました。直接 URL を返します。");
+            return containerClient.GetBlobClient(blobName).Uri.ToString();
+        }
     }
 
     /// <summary>
