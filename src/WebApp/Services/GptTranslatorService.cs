@@ -284,7 +284,16 @@ public class GptTranslatorService : IGptTranslatorService
             var analyzeResult = responseJson.RootElement;
 
             // Markdown テキストを取得（図は <figure> タグで埋め込まれている）
-            var extractedMarkdown = analyzeResult.GetProperty("content").GetString() ?? string.Empty;
+            string extractedMarkdown;
+            if (analyzeResult.TryGetProperty("content", out var contentElement))
+            {
+                extractedMarkdown = contentElement.GetString() ?? string.Empty;
+            }
+            else
+            {
+                _logger.LogWarning("Document Intelligence レスポンスに content プロパティがありません");
+                return GptTranslationResult.Failure("ドキュメントの解析結果を取得できませんでした。", document.FileName);
+            }
 
             if (string.IsNullOrWhiteSpace(extractedMarkdown))
             {
@@ -424,7 +433,17 @@ public class GptTranslatorService : IGptTranslatorService
             try
             {
                 // Figure ID を使用して画像を取得
-                var figureId = figure.GetProperty("id").GetString() ?? "";
+                if (!figure.TryGetProperty("id", out var idElement))
+                {
+                    _logger.LogWarning("図に id プロパティがありません。スキップします。");
+                    continue;
+                }
+                var figureId = idElement.GetString() ?? "";
+                if (string.IsNullOrEmpty(figureId))
+                {
+                    _logger.LogWarning("図の id が空です。スキップします。");
+                    continue;
+                }
 
                 _logger.LogInformation("図を取得中: {FigureId}", figureId);
 
