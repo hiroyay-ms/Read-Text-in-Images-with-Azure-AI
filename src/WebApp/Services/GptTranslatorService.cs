@@ -225,8 +225,8 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// ドキュメントを翻訳します
-    /// 重要: 画像は画像として抽出し、OCR によるテキスト抽出は行いません
-    /// Document Intelligence の代わりに PdfPig/OpenXML でテキストと画像を別々に抽出
+    /// Document Intelligence でテキストを抽出し、画像は PdfPig/OpenXML で別途抽出
+    /// 重要: Document Intelligence が OCR で抽出した画像内テキストは削除し、画像として表示
     /// </summary>
     public async Task<GptTranslationResult> TranslateDocumentAsync(
         IFormFile document,
@@ -262,69 +262,88 @@ public class GptTranslatorService : IGptTranslatorService
             var documentId = Path.GetFileNameWithoutExtension(document.FileName);
             var fileExtension = Path.GetExtension(document.FileName).ToLowerInvariant();
 
-            // 2. ファイルからテキストと画像を別々に抽出（画像の OCR は行わない）
-            _logger.LogInformation("ファイルからテキストと画像を別々に抽出中... ファイル形式: {Extension}", fileExtension);
-            _logger.LogInformation("重要: 画像内のテキストは OCR で抽出しません。画像は画像として保持します。");
+            // 2. Document Intelligence でテキストを抽出（Markdown 形式）
+            _logger.LogInformation("Document Intelligence でテキストを抽出中...");
+            
+            var base64Content = Convert.ToBase64String(fileBytes);
+            using var requestContent = RequestContent.Create(new { base64Source = base64Content });
+            
+            var requestContext = new RequestContext();
+            var operation = await _documentIntelligenceClient.AnalyzeDocumentAsync(
+                WaitUntil.Completed,
+                "prebuilt-layout",
+                requestContent,
+                pages: null,
+                locale: null,
+                stringIndexType: null,
+                features: null,
+                queryFields: null,
+                outputContentFormat: "markdown",
+                output: null,
+                context: requestContext);
+            
+            _logger.LogInformation("Document Intelligence API 呼び出し完了。Operation ID: {OperationId}", operation.Id);
 
-            string extractedText;
-            List<ExtractedImageInfo> imageInfos;
+            var responseJson = JsonDocument.Parse(operation.Value.ToStream());
+            var rootElement = responseJson.RootElement;
 
-            if (fileExtension == ".pdf")
+            JsonElement analyzeResult;
+            if (rootElement.TryGetProperty("analyzeResult", out var analyzeResultElement))
             {
-                // PDF からテキストのみを抽出（画像内テキストは抽出しない）
-                extractedText = ExtractTextFromPdf(fileBytes);
-                // PDF から画像を抽出（OCR は行わない）
-                imageInfos = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
-            }
-            else if (fileExtension == ".docx")
-            {
-                // Word からテキストのみを抽出（画像内テキストは抽出しない）
-                extractedText = ExtractTextFromDocx(fileBytes);
-                // Word から画像を抽出（OCR は行わない）
-                imageInfos = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+                analyzeResult = analyzeResultElement;
             }
             else
             {
-                return GptTranslationResult.Failure(
-                    $"サポートされていないファイル形式です: {fileExtension}",
-                    document.FileName);
+                analyzeResult = rootElement;
             }
 
-            if (string.IsNullOrWhiteSpace(extractedText))
+            string extractedMarkdown;
+            if (analyzeResult.TryGetProperty("content", out var contentElement))
+            {
+                extractedMarkdown = contentElement.GetString() ?? string.Empty;
+            }
+            else
+            {
+                return GptTranslationResult.Failure("ドキュメントの解析結果を取得できませんでした。", document.FileName);
+            }
+
+            if (string.IsNullOrWhiteSpace(extractedMarkdown))
             {
                 return GptTranslationResult.Failure("ドキュメントからテキストを抽出できませんでした。", document.FileName);
             }
 
-            _logger.LogInformation("テキスト抽出完了。文字数: {Length}, 画像数: {ImageCount}", 
-                extractedText.Length, imageInfos.Count);
+            _logger.LogInformation("Document Intelligence テキスト抽出完了。文字数: {Length}", extractedMarkdown.Length);
 
-            // URL のリストを抽出（GptTranslationResult 用）
+            // 3. PdfPig/OpenXML で画像を別途抽出（OCR は行わない）
+            _logger.LogInformation("ファイルから画像を抽出中... ファイル形式: {Extension}", fileExtension);
+
+            List<ExtractedImageInfo> imageInfos;
+            if (fileExtension == ".pdf")
+            {
+                imageInfos = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
+            }
+            else if (fileExtension == ".docx")
+            {
+                imageInfos = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+            }
+            else
+            {
+                imageInfos = new List<ExtractedImageInfo>();
+            }
+
             var imageUrls = imageInfos.Select(i => i.Url).ToList();
+            _logger.LogInformation("画像抽出完了。画像数: {Count}", imageInfos.Count);
 
-            foreach (var info in imageInfos)
-            {
-                _logger.LogInformation("抽出された画像: ページ={Page}, 説明={Description}", 
-                    info.PageNumber, info.Description);
-            }
-
-            // 3. テキストを Markdown 形式に整形し、ページ区切りに画像プレースホルダーを挿入
-            var (markdownWithPlaceholders, placeholderMapping) = CreateMarkdownWithImagePlaceholders(extractedText, imageInfos);
-
-            _logger.LogInformation("Markdown 作成完了。プレースホルダー数: {Count}", placeholderMapping.Count);
+            // 4. Document Intelligence の Markdown から図の OCR テキストを削除し、画像プレースホルダーを挿入
+            var (processedMarkdown, placeholderMapping) = RemoveFigureOcrAndInsertPlaceholders(extractedMarkdown, imageInfos);
             
-            // 挿入後のプレースホルダーをログ出力
-            var placeholderPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithPlaceholders, @"\[\[IMG_PLACEHOLDER_\d+\]\]");
-            _logger.LogInformation("挿入後のプレースホルダー数: {Count}", placeholderPatterns.Count);
-            foreach (System.Text.RegularExpressions.Match match in placeholderPatterns)
-            {
-                _logger.LogInformation("プレースホルダー: {Pattern}", match.Value);
-            }
+            _logger.LogInformation("図の OCR テキストを削除し、プレースホルダーを挿入しました。プレースホルダー数: {Count}", placeholderMapping.Count);
 
-            // 4. GPT-4o で翻訳（プレースホルダーを保持）
+            // 5. GPT-4o で翻訳（プレースホルダーを保持）
             _logger.LogInformation("GPT-4o で翻訳中...");
 
             var translationResult = await TranslateMarkdownAsync(
-                markdownWithPlaceholders,
+                processedMarkdown,
                 targetLanguage,
                 options,
                 cancellationToken);
@@ -334,18 +353,13 @@ public class GptTranslatorService : IGptTranslatorService
                 return translationResult;
             }
 
-            // 5. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
+            // 6. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
             var translatedTextWithImages = ReplacePlaceholdersWithImages(translationResult.TranslatedText, placeholderMapping);
             
-            // 置換後の画像参照をログ出力
             var finalImagePatterns = System.Text.RegularExpressions.Regex.Matches(translatedTextWithImages, @"!\[.*?\]\([^)]+\)");
             _logger.LogInformation("最終的な画像参照数: {Count}", finalImagePatterns.Count);
-            foreach (System.Text.RegularExpressions.Match match in finalImagePatterns)
-            {
-                _logger.LogInformation("最終画像参照: {Pattern}", match.Value);
-            }
 
-            // 6. 翻訳結果を Blob Storage に保存
+            // 7. 翻訳結果を Blob Storage に保存
             var blobName = $"{documentId}_{targetLanguage}_{timestamp}.md";
             var blobUrl = await SaveTranslationResultAsync(blobName, translatedTextWithImages, cancellationToken);
 
@@ -358,7 +372,7 @@ public class GptTranslatorService : IGptTranslatorService
 
             return GptTranslationResult.Success(
                 originalFileName: document.FileName,
-                originalText: markdownWithPlaceholders,
+                originalText: processedMarkdown,
                 translatedText: translatedTextWithImages,
                 sourceLanguage: options.SourceLanguage ?? "auto",
                 targetLanguage: targetLanguage,
@@ -413,6 +427,146 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     #region Private Methods
+
+    /// <summary>
+    /// Document Intelligence が OCR で抽出した図のテキストを削除し、代わりに画像プレースホルダーを挿入します
+    /// 画像内テキストは翻訳せず、実際の画像として表示します
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) RemoveFigureOcrAndInsertPlaceholders(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            return (markdown, placeholderMapping);
+        }
+
+        // 各画像にプレースホルダーを割り当て
+        for (int i = 0; i < imageInfos.Count; i++)
+        {
+            var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
+            var imageMarkdown = $"![{imageInfos[i].Description}]({imageInfos[i].Url})";
+            placeholderMapping[placeholder] = imageMarkdown;
+        }
+
+        var result = markdown;
+
+        // 1. Document Intelligence の図参照パターンを検出して削除/置換
+        // パターン例:
+        // - ![](figures/0) または ![alt text](figures/N)
+        // - :figure:N または :figure: N
+        // - <figure id="N">...</figure>
+        // - 図 N: テキスト... のような OCR テキスト
+
+        // 図参照パターン: ![...](figures/N)
+        var figureImagePattern = new System.Text.RegularExpressions.Regex(
+            @"!\[[^\]]*\]\(figures/\d+\)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        result = figureImagePattern.Replace(result, "");
+
+        // :figure:N パターン
+        var colonFigurePattern = new System.Text.RegularExpressions.Regex(
+            @":figure:\s*\d+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        result = colonFigurePattern.Replace(result, "");
+
+        // <figure>...</figure> タグ
+        var figureTagPattern = new System.Text.RegularExpressions.Regex(
+            @"<figure[^>]*>[\s\S]*?</figure>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        result = figureTagPattern.Replace(result, "");
+
+        // <!-- image --> コメント
+        var imageCommentPattern = new System.Text.RegularExpressions.Regex(
+            @"<!--\s*image[^>]*-->",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        result = imageCommentPattern.Replace(result, "");
+
+        _logger.LogInformation("[図参照削除] 図参照パターンを削除しました");
+
+        // 2. ページごとに画像をグループ化
+        var imagesByPage = imageInfos
+            .Select((img, idx) => new { Image = img, Index = idx })
+            .GroupBy(x => x.Image.PageNumber)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Image.IndexInPage).ToList());
+
+        _logger.LogInformation("[図参照削除] 画像数={ImageCount}, ページ分布={Distribution}", 
+            imageInfos.Count,
+            string.Join(", ", imagesByPage.Select(kvp => $"P{kvp.Key}:{kvp.Value.Count}")));
+
+        // 3. ページ区切り（水平線または見出し）を検出して、画像プレースホルダーを挿入
+        var lines = result.Split('\n');
+        var builder = new System.Text.StringBuilder();
+        var currentPage = 1;
+        var insertedImages = new HashSet<int>();
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            builder.AppendLine(line);
+
+            // ページ区切りを検出（水平線）
+            var trimmedLine = line.Trim();
+            bool isPageBreak = trimmedLine == "---" || trimmedLine == "***" || trimmedLine == "___";
+            
+            // または大見出しを検出（ページの区切りとして使用）
+            bool isHeading = trimmedLine.StartsWith("# ") || trimmedLine.StartsWith("## ");
+
+            if (isPageBreak || isHeading)
+            {
+                // このページの画像を挿入
+                if (imagesByPage.TryGetValue(currentPage, out var pageImages))
+                {
+                    builder.AppendLine();
+                    foreach (var item in pageImages)
+                    {
+                        if (!insertedImages.Contains(item.Index))
+                        {
+                            var placeholder = $"[[IMG_PLACEHOLDER_{item.Index + 1:D3}]]";
+                            builder.AppendLine(placeholder);
+                            builder.AppendLine();
+                            insertedImages.Add(item.Index);
+                            _logger.LogInformation("[図参照削除] ページ {Page} の画像 {Index} のプレースホルダーを挿入", currentPage, item.Index + 1);
+                        }
+                    }
+                }
+                
+                if (isPageBreak)
+                {
+                    currentPage++;
+                }
+            }
+        }
+
+        // 4. まだ挿入されていない画像を末尾に追加
+        var remainingImages = Enumerable.Range(0, imageInfos.Count)
+            .Where(idx => !insertedImages.Contains(idx))
+            .ToList();
+
+        if (remainingImages.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("---");
+            builder.AppendLine();
+            foreach (var idx in remainingImages)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{idx + 1:D3}]]";
+                builder.AppendLine(placeholder);
+                builder.AppendLine();
+                _logger.LogInformation("[図参照削除] 画像 {Index} のプレースホルダーを末尾に追加", idx + 1);
+            }
+        }
+
+        // 5. 連続する空行を整理
+        var finalResult = System.Text.RegularExpressions.Regex.Replace(
+            builder.ToString(), 
+            @"\n{3,}", 
+            "\n\n");
+
+        return (finalResult, placeholderMapping);
+    }
 
     /// <summary>
     /// PDF ファイルからテキストのみを抽出します（画像内テキストは抽出しない）
