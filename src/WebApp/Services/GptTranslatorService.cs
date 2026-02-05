@@ -6,7 +6,11 @@ using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
+using DocumentFormat.OpenXml.Packaging;
 using OpenAI.Chat;
+using SkiaSharp;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.Content;
 using WebApp.Models;
 
 namespace WebApp.Services;
@@ -263,9 +267,10 @@ public class GptTranslatorService : IGptTranslatorService
                 base64Source = base64Content
             });
 
-            // Markdown 形式で出力し、Figures も取得
-            // features パラメータに "figures" を指定して図を抽出
-            _logger.LogInformation("Document Intelligence API を呼び出し中... (outputContentFormat=markdown, features=figures)");
+            // Markdown 形式で出力
+            // 注意: features=figures は一部のリソースでサポートされていないため使用しない
+            // 代わりに PDF/Word から直接画像を抽出する
+            _logger.LogInformation("Document Intelligence API を呼び出し中... (outputContentFormat=markdown)");
             
             var requestContext = new RequestContext();
             var operation = await _documentIntelligenceClient.AnalyzeDocumentAsync(
@@ -275,7 +280,7 @@ public class GptTranslatorService : IGptTranslatorService
                 pages: null,
                 locale: null,
                 stringIndexType: null,
-                features: new DocumentAnalysisFeature[] { "figures" },  // 文字列から暗黙的変換
+                features: null,  // figures はプレミアム機能のため使用しない
                 queryFields: null,
                 outputContentFormat: "markdown",
                 output: null,
@@ -334,39 +339,32 @@ public class GptTranslatorService : IGptTranslatorService
                 _logger.LogInformation("図参照パターン: {Pattern}", match.Value);
             }
 
-            // 3. 図（Figures）を抽出して Blob Storage に保存
+            // 3. 元ファイルから画像を直接抽出して Blob Storage に保存
             var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
             var documentId = Path.GetFileNameWithoutExtension(document.FileName);
+            var fileExtension = Path.GetExtension(document.FileName).ToLowerInvariant();
             
-            // Operation ID を取得（Figures API に必要）
-            var operationId = operation.Id;
-            _logger.LogInformation("Document Intelligence Operation ID: {OperationId}", operationId);
+            _logger.LogInformation("ファイルから画像を抽出中... ファイル形式: {Extension}", fileExtension);
 
-            // Figures 情報を取得
-            var hasFigures = analyzeResult.TryGetProperty("figures", out var figuresElement);
-            _logger.LogInformation("figures プロパティの存在: {HasFigures}", hasFigures);
-            
-            var figures = hasFigures
-                ? figuresElement.EnumerateArray().ToList()
-                : new List<JsonElement>();
-            
-            _logger.LogInformation("取得した Figures 数: {Count}", figures.Count);
-            
-            // 各 Figure の ID をログ出力
-            foreach (var fig in figures)
+            // 元ファイルのバイトデータを取得
+            memoryStream.Position = 0;
+            var fileBytes = memoryStream.ToArray();
+
+            // ファイル形式に応じて画像を抽出
+            List<string> imageUrls;
+            if (fileExtension == ".pdf")
             {
-                if (fig.TryGetProperty("id", out var figId))
-                {
-                    _logger.LogInformation("Figure ID: {Id}", figId.GetString());
-                }
+                imageUrls = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
             }
-
-            var imageUrls = await ExtractAndSaveFiguresAsync(
-                figures,
-                operationId,
-                documentId,
-                timestamp,
-                cancellationToken);
+            else if (fileExtension == ".docx")
+            {
+                imageUrls = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+            }
+            else
+            {
+                imageUrls = new List<string>();
+                _logger.LogWarning("サポートされていないファイル形式です: {Extension}", fileExtension);
+            }
 
             _logger.LogInformation("画像抽出完了。保存された画像数: {Count}", imageUrls.Count);
             foreach (var url in imageUrls)
@@ -374,8 +372,8 @@ public class GptTranslatorService : IGptTranslatorService
                 _logger.LogInformation("保存された画像 URL: {Url}", url);
             }
 
-            // 4. Markdown 内の図参照を Blob URL に置換
-            var markdownWithImages = ReplaceFigureReferences(extractedMarkdown, figures, imageUrls);
+            // 4. Markdown 内の図参照を Blob URL に置換（または画像を追加）
+            var markdownWithImages = InsertImagesIntoMarkdown(extractedMarkdown, imageUrls);
             
             // 置換後の図参照をログ出力
             var replacedPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithImages, @"!\[.*?\]\([^)]+\)");
@@ -469,124 +467,254 @@ public class GptTranslatorService : IGptTranslatorService
     #region Private Methods
 
     /// <summary>
-    /// Document Intelligence の Figures を抽出して Blob Storage に保存します
+    /// PDF ファイルから画像を抽出して Blob Storage に保存します
     /// </summary>
-    private async Task<List<string>> ExtractAndSaveFiguresAsync(
-        List<JsonElement> figures,
-        string operationId,
+    private async Task<List<string>> ExtractImagesFromPdfAsync(
+        byte[] pdfBytes,
         string documentId,
         string timestamp,
         CancellationToken cancellationToken)
     {
         var imageUrls = new List<string>();
 
-        if (figures == null || figures.Count == 0)
+        try
         {
-            _logger.LogInformation("ドキュメントに画像（figures）が含まれていません");
-            return imageUrls;
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+            await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+
+            using var pdfDocument = PdfDocument.Open(pdfBytes);
+            var imageIndex = 0;
+
+            _logger.LogInformation("PDF ページ数: {PageCount}", pdfDocument.NumberOfPages);
+
+            foreach (var page in pdfDocument.GetPages())
+            {
+                _logger.LogInformation("ページ {PageNumber} から画像を抽出中...", page.Number);
+
+                // ページ内の画像を取得
+                var images = page.GetImages();
+                
+                foreach (var image in images)
+                {
+                    try
+                    {
+                        imageIndex++;
+                        var imageBytes = image.RawBytes.ToArray();
+                        
+                        if (imageBytes.Length == 0)
+                        {
+                            _logger.LogWarning("画像データが空です。スキップします。");
+                            continue;
+                        }
+
+                        _logger.LogInformation("画像 {Index} を処理中... サイズ: {Size} bytes", imageIndex, imageBytes.Length);
+
+                        // 画像形式を判定してファイル名を決定
+                        var extension = DetermineImageExtension(imageBytes);
+                        var imageName = $"images/{documentId}_{timestamp}/image_{imageIndex:D3}{extension}";
+                        
+                        // Blob Storage に保存
+                        var blobClient = containerClient.GetBlobClient(imageName);
+                        using var imageStream = new MemoryStream(imageBytes);
+                        await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
+
+                        // SAS トークン付き URL を生成（24時間有効）
+                        var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
+                        imageUrls.Add(imageUrl);
+
+                        _logger.LogInformation("画像を保存しました: {ImageName}", imageName);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "PDF 画像 {Index} の抽出に失敗しました", imageIndex);
+                    }
+                }
+            }
+
+            _logger.LogInformation("PDF から {Count} 件の画像を抽出しました", imageUrls.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "PDF からの画像抽出中にエラーが発生しました");
         }
 
-        _logger.LogInformation("Figures API で {Count} 件の図を取得します。OperationId: {OperationId}", figures.Count, operationId);
+        return imageUrls;
+    }
 
-        var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
-        await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+    /// <summary>
+    /// Word (.docx) ファイルから画像を抽出して Blob Storage に保存します
+    /// </summary>
+    private async Task<List<string>> ExtractImagesFromDocxAsync(
+        byte[] docxBytes,
+        string documentId,
+        string timestamp,
+        CancellationToken cancellationToken)
+    {
+        var imageUrls = new List<string>();
 
-        foreach (var figure in figures)
+        try
         {
-            try
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+            await containerClient.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+
+            using var memoryStream = new MemoryStream(docxBytes);
+            using var wordDocument = WordprocessingDocument.Open(memoryStream, false);
+
+            if (wordDocument.MainDocumentPart == null)
             {
-                // Figure ID を使用して画像を取得
-                if (!figure.TryGetProperty("id", out var idElement))
-                {
-                    _logger.LogWarning("図に id プロパティがありません。スキップします。利用可能なプロパティ: {Props}", 
-                        string.Join(", ", figure.EnumerateObject().Select(p => p.Name)));
-                    continue;
-                }
-                var figureId = idElement.GetString() ?? "";
-                if (string.IsNullOrEmpty(figureId))
-                {
-                    _logger.LogWarning("図の id が空です。スキップします。");
-                    continue;
-                }
+                _logger.LogWarning("Word ドキュメントの MainDocumentPart が見つかりません");
+                return imageUrls;
+            }
 
-                _logger.LogInformation("Figures API を呼び出し中: ModelId=prebuilt-layout, OperationId={OperationId}, FigureId={FigureId}", 
-                    operationId, figureId);
+            var imageIndex = 0;
 
-                // GetAnalyzeResultFigure API を使用して画像を取得
-                Response<BinaryData> figureResponse;
+            // 埋め込み画像を取得
+            foreach (var imagePart in wordDocument.MainDocumentPart.ImageParts)
+            {
                 try
                 {
-                    figureResponse = await _documentIntelligenceClient.GetAnalyzeResultFigureAsync(
-                        "prebuilt-layout",
-                        operationId,
-                        figureId,
-                        cancellationToken);
-                }
-                catch (RequestFailedException rfEx)
-                {
-                    _logger.LogError(rfEx, "Figures API 呼び出しに失敗しました。Status: {Status}, ErrorCode: {ErrorCode}, FigureId: {FigureId}", 
-                        rfEx.Status, rfEx.ErrorCode, figureId);
-                    continue;
-                }
+                    imageIndex++;
+                    
+                    using var imageStream = imagePart.GetStream();
+                    using var imageMemoryStream = new MemoryStream();
+                    await imageStream.CopyToAsync(imageMemoryStream, cancellationToken);
+                    var imageBytes = imageMemoryStream.ToArray();
 
-                if (figureResponse != null && figureResponse.Value != null)
-                {
-                    var responseBytes = figureResponse.Value.ToArray();
-                    _logger.LogInformation("図のバイナリデータを取得しました: {FigureId}, サイズ: {Size} bytes", figureId, responseBytes.Length);
-
-                    if (responseBytes.Length == 0)
+                    if (imageBytes.Length == 0)
                     {
-                        _logger.LogWarning("図のバイナリデータが空です: {FigureId}", figureId);
+                        _logger.LogWarning("画像データが空です。スキップします。");
                         continue;
                     }
 
-                    // 画像を Blob Storage に保存
-                    var safeImageName = figureId.Replace(".", "_").Replace("/", "_");
-                    var imageName = $"images/{documentId}_{timestamp}/{safeImageName}.png";
-                    var blobClient = containerClient.GetBlobClient(imageName);
+                    _logger.LogInformation("画像 {Index} を処理中... サイズ: {Size} bytes", imageIndex, imageBytes.Length);
 
-                    using var imageStream = new MemoryStream(responseBytes);
-                    await blobClient.UploadAsync(imageStream, overwrite: true, cancellationToken);
+                    // 画像形式を判定してファイル名を決定
+                    var extension = DetermineImageExtension(imageBytes);
+                    var imageName = $"images/{documentId}_{timestamp}/image_{imageIndex:D3}{extension}";
+
+                    // Blob Storage に保存
+                    var blobClient = containerClient.GetBlobClient(imageName);
+                    imageMemoryStream.Position = 0;
+                    await blobClient.UploadAsync(imageMemoryStream, overwrite: true, cancellationToken);
 
                     // SAS トークン付き URL を生成（24時間有効）
-                    string imageUrl;
-                    if (blobClient.CanGenerateSasUri)
-                    {
-                        var sasBuilder = new BlobSasBuilder
-                        {
-                            BlobContainerName = _translatedContainerName,
-                            BlobName = imageName,
-                            Resource = "b",
-                            ExpiresOn = DateTimeOffset.UtcNow.AddHours(24)
-                        };
-                        sasBuilder.SetPermissions(BlobSasPermissions.Read);
-                        imageUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
-                    }
-                    else
-                    {
-                        // SAS が生成できない場合はユーザー委任 SAS を試行
-                        imageUrl = await GenerateUserDelegationSasAsync(containerClient, imageName, cancellationToken);
-                    }
-
+                    var imageUrl = await GenerateImageUrlAsync(containerClient, imageName, cancellationToken);
                     imageUrls.Add(imageUrl);
-                    _logger.LogInformation("図を Blob Storage に保存しました: {ImageName}, URL: {Url}", imageName, imageUrl);
+
+                    _logger.LogInformation("画像を保存しました: {ImageName}", imageName);
                 }
-                else
+                catch (Exception ex)
                 {
-                    _logger.LogWarning("Figures API からレスポンスが取得できませんでした: {FigureId}", figureId);
+                    _logger.LogWarning(ex, "Word 画像 {Index} の抽出に失敗しました", imageIndex);
                 }
             }
-            catch (Exception ex)
-            {
-                var errorFigureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() : "unknown";
-                _logger.LogError(ex, "図の取得中に予期しないエラーが発生しました: {FigureId}", errorFigureId);
-                // 個別の画像取得失敗は処理を継続
-            }
+
+            _logger.LogInformation("Word から {Count} 件の画像を抽出しました", imageUrls.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Word からの画像抽出中にエラーが発生しました");
         }
 
-        _logger.LogInformation("Figures API 処理完了。取得成功: {SuccessCount}/{TotalCount}", imageUrls.Count, figures.Count);
-
         return imageUrls;
+    }
+
+    /// <summary>
+    /// 画像のバイトデータから拡張子を判定します
+    /// </summary>
+    private static string DetermineImageExtension(byte[] imageBytes)
+    {
+        if (imageBytes.Length < 4)
+            return ".bin";
+
+        // PNG: 89 50 4E 47
+        if (imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E && imageBytes[3] == 0x47)
+            return ".png";
+
+        // JPEG: FF D8 FF
+        if (imageBytes[0] == 0xFF && imageBytes[1] == 0xD8 && imageBytes[2] == 0xFF)
+            return ".jpg";
+
+        // GIF: 47 49 46 38
+        if (imageBytes[0] == 0x47 && imageBytes[1] == 0x49 && imageBytes[2] == 0x46 && imageBytes[3] == 0x38)
+            return ".gif";
+
+        // BMP: 42 4D
+        if (imageBytes[0] == 0x42 && imageBytes[1] == 0x4D)
+            return ".bmp";
+
+        // WebP: 52 49 46 46 ... 57 45 42 50
+        if (imageBytes.Length > 12 && imageBytes[0] == 0x52 && imageBytes[1] == 0x49 && 
+            imageBytes[2] == 0x46 && imageBytes[3] == 0x46 &&
+            imageBytes[8] == 0x57 && imageBytes[9] == 0x45 && imageBytes[10] == 0x42 && imageBytes[11] == 0x50)
+            return ".webp";
+
+        // TIFF: 49 49 2A 00 or 4D 4D 00 2A
+        if ((imageBytes[0] == 0x49 && imageBytes[1] == 0x49 && imageBytes[2] == 0x2A && imageBytes[3] == 0x00) ||
+            (imageBytes[0] == 0x4D && imageBytes[1] == 0x4D && imageBytes[2] == 0x00 && imageBytes[3] == 0x2A))
+            return ".tiff";
+
+        return ".png";  // デフォルト
+    }
+
+    /// <summary>
+    /// 画像の URL を生成します（SAS トークン付き）
+    /// </summary>
+    private async Task<string> GenerateImageUrlAsync(
+        Azure.Storage.Blobs.BlobContainerClient containerClient,
+        string imageName,
+        CancellationToken cancellationToken)
+    {
+        var blobClient = containerClient.GetBlobClient(imageName);
+
+        if (blobClient.CanGenerateSasUri)
+        {
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = _translatedContainerName,
+                BlobName = imageName,
+                Resource = "b",
+                ExpiresOn = DateTimeOffset.UtcNow.AddHours(24)
+            };
+            sasBuilder.SetPermissions(BlobSasPermissions.Read);
+            return blobClient.GenerateSasUri(sasBuilder).ToString();
+        }
+        else
+        {
+            return await GenerateUserDelegationSasAsync(containerClient, imageName, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Markdown の末尾に抽出した画像を追加します
+    /// </summary>
+    private string InsertImagesIntoMarkdown(string markdown, List<string> imageUrls)
+    {
+        if (imageUrls == null || imageUrls.Count == 0)
+        {
+            _logger.LogInformation("挿入する画像がありません");
+            return markdown;
+        }
+
+        var sb = new System.Text.StringBuilder(markdown);
+        sb.AppendLine();
+        sb.AppendLine();
+        sb.AppendLine("---");
+        sb.AppendLine();
+        sb.AppendLine("## 抽出された画像");
+        sb.AppendLine();
+
+        for (int i = 0; i < imageUrls.Count; i++)
+        {
+            sb.AppendLine($"### 画像 {i + 1}");
+            sb.AppendLine();
+            sb.AppendLine($"![画像 {i + 1}]({imageUrls[i]})");
+            sb.AppendLine();
+        }
+
+        _logger.LogInformation("Markdown に {Count} 件の画像を追加しました", imageUrls.Count);
+
+        return sb.ToString();
     }
 
     /// <summary>
@@ -626,96 +754,6 @@ public class GptTranslatorService : IGptTranslatorService
             _logger.LogWarning(ex, "ユーザー委任 SAS の生成に失敗しました。直接 URL を返します。");
             return containerClient.GetBlobClient(blobName).Uri.ToString();
         }
-    }
-
-    /// <summary>
-    /// Markdown 内の図参照を実際の Blob URL に置換します
-    /// </summary>
-    private string ReplaceFigureReferences(string markdown, List<JsonElement> figures, List<string> imageUrls)
-    {
-        if (figures == null || figures.Count == 0 || imageUrls.Count == 0)
-        {
-            _logger.LogInformation("図参照の置換をスキップ: figures={FigCount}, imageUrls={UrlCount}", 
-                figures?.Count ?? 0, imageUrls?.Count ?? 0);
-            return markdown;
-        }
-
-        var result = markdown;
-        var replacementCount = 0;
-
-        // Document Intelligence v4.0 の Markdown では図は以下の形式で出力される:
-        // :figure{#figures/0}
-        // または
-        // ![](figures/0)
-        // ![](figures/1.1)  <- pageNumber.figureIndex 形式
-        // または <figure> タグ内に埋め込まれる
-
-        for (int i = 0; i < Math.Min(figures.Count, imageUrls.Count); i++)
-        {
-            var figure = figures[i];
-            var figureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "";
-            var imageUrl = imageUrls[i];
-
-            _logger.LogInformation("図参照の置換を試行: Index={Index}, FigureId={FigureId}", i, figureId);
-
-            // パターン 1: :figure{#figures/ID} 形式（Document Intelligence v4.0 の新形式）
-            var colonPattern = $":figure{{#{figureId}}}";
-            if (result.Contains(colonPattern))
-            {
-                result = result.Replace(colonPattern, $"![図{i + 1}]({imageUrl})");
-                _logger.LogInformation("パターン1で置換: {Pattern}", colonPattern);
-                replacementCount++;
-            }
-
-            // パターン 2: :figure{#figures/ID} 形式（figures/ プレフィックス付き）
-            var colonPatternWithPrefix = $":figure{{#figures/{figureId}}}";
-            if (result.Contains(colonPatternWithPrefix))
-            {
-                result = result.Replace(colonPatternWithPrefix, $"![図{i + 1}]({imageUrl})");
-                _logger.LogInformation("パターン2で置換: {Pattern}", colonPatternWithPrefix);
-                replacementCount++;
-            }
-
-            // パターン 3: ![](figureId) 形式
-            var imgPattern1 = $"![]({figureId})";
-            if (result.Contains(imgPattern1))
-            {
-                result = result.Replace(imgPattern1, $"![図{i + 1}]({imageUrl})");
-                _logger.LogInformation("パターン3で置換: {Pattern}", imgPattern1);
-                replacementCount++;
-            }
-
-            // パターン 4: ![](figures/ID) 形式
-            var imgPattern2 = $"![](figures/{figureId})";
-            if (result.Contains(imgPattern2))
-            {
-                result = result.Replace(imgPattern2, $"![図{i + 1}]({imageUrl})");
-                _logger.LogInformation("パターン4で置換: {Pattern}", imgPattern2);
-                replacementCount++;
-            }
-
-            // パターン 5: ](figures/ID) 形式（既存の画像タグの URL 部分のみ）
-            var urlPattern = $"](figures/{figureId})";
-            if (result.Contains(urlPattern))
-            {
-                result = result.Replace(urlPattern, $"]({imageUrl})");
-                _logger.LogInformation("パターン5で置換: {Pattern}", urlPattern);
-                replacementCount++;
-            }
-
-            // パターン 6: 単純な連番形式 ![](figures/N)
-            var indexPattern = $"![](figures/{i})";
-            if (result.Contains(indexPattern))
-            {
-                result = result.Replace(indexPattern, $"![図{i + 1}]({imageUrl})");
-                _logger.LogInformation("パターン6で置換: {Pattern}", indexPattern);
-                replacementCount++;
-            }
-        }
-
-        _logger.LogInformation("図参照の置換完了: {ReplacementCount} 件の置換を実行", replacementCount);
-
-        return result;
     }
 
     /// <summary>
