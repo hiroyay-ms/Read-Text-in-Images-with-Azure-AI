@@ -331,6 +331,33 @@ public class GptTranslatorService : IGptTranslatorService
             var markdownPreview = extractedMarkdown.Length > 500 ? extractedMarkdown.Substring(0, 500) : extractedMarkdown;
             _logger.LogDebug("抽出された Markdown (先頭): {Preview}", markdownPreview);
             
+            // Document Intelligence の figures 情報を取得（図の位置情報）
+            var figureInfos = new List<(int PageNumber, string FigureId)>();
+            if (analyzeResult.TryGetProperty("figures", out var figuresElement) && figuresElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var figure in figuresElement.EnumerateArray())
+                {
+                    var figureId = figure.TryGetProperty("id", out var idElement) ? idElement.GetString() ?? "" : "";
+                    var pageNumber = 1;
+                    
+                    if (figure.TryGetProperty("boundingRegions", out var regionsElement) && regionsElement.ValueKind == JsonValueKind.Array)
+                    {
+                        var firstRegion = regionsElement.EnumerateArray().FirstOrDefault();
+                        if (firstRegion.TryGetProperty("pageNumber", out var pageElement))
+                        {
+                            pageNumber = pageElement.GetInt32();
+                        }
+                    }
+                    
+                    figureInfos.Add((pageNumber, figureId));
+                    _logger.LogInformation("Document Intelligence 図検出: FigureId={FigureId}, Page={Page}", figureId, pageNumber);
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Document Intelligence レスポンスに figures 情報がありません。PDF/Word から直接画像を抽出します。");
+            }
+            
             // 図参照パターンを検索してログ出力
             var figurePatterns = System.Text.RegularExpressions.Regex.Matches(extractedMarkdown, @"!\[.*?\]\([^)]+\)");
             _logger.LogInformation("Markdown 内の図参照パターン数: {Count}", figurePatterns.Count);
@@ -376,22 +403,43 @@ public class GptTranslatorService : IGptTranslatorService
                     info.PageNumber, info.Description, info.Url);
             }
 
-            // 4. Markdown 内の適切な位置にプレースホルダーを挿入し、マッピングを取得
-            var (markdownWithPlaceholders, placeholderMapping) = InsertImagePlaceholdersIntoMarkdown(extractedMarkdown, imageInfos);
+            // 4. Document Intelligence の figures 情報がある場合、それを使って位置情報を補完
+            // figures 情報と抽出した画像を照合（ページ番号で対応付け）
+            if (figureInfos.Count > 0 && imageInfos.Count > 0)
+            {
+                _logger.LogInformation("Document Intelligence の figures 情報を使用して画像位置を補完します。" +
+                    " figures数={FigureCount}, 抽出画像数={ImageCount}", figureInfos.Count, imageInfos.Count);
+            }
+
+            // 5. Markdown から図参照（:figure: 形式）を検出し、プレースホルダーに置換
+            var (processedMarkdown, figureReplacements) = ReplaceFigureReferencesWithPlaceholders(extractedMarkdown, imageInfos);
+            
+            // 図参照が見つからない場合は、従来のページ区切り/見出しベースの挿入を使用
+            if (figureReplacements.Count == 0)
+            {
+                _logger.LogInformation("Markdown 内に図参照が見つからないため、ページ区切り/見出しベースで挿入します");
+                var (markdownWithPlaceholders, placeholderMapping) = InsertImagePlaceholdersIntoMarkdown(extractedMarkdown, imageInfos);
+                processedMarkdown = markdownWithPlaceholders;
+                figureReplacements = placeholderMapping;
+            }
+            else
+            {
+                _logger.LogInformation("Markdown 内の図参照を {Count} 件のプレースホルダーに置換しました", figureReplacements.Count);
+            }
             
             // 挿入後のプレースホルダーをログ出力
-            var placeholderPatterns = System.Text.RegularExpressions.Regex.Matches(markdownWithPlaceholders, @"\[\[IMG_PLACEHOLDER_\d+\]\]");
+            var placeholderPatterns = System.Text.RegularExpressions.Regex.Matches(processedMarkdown, @"\[\[IMG_PLACEHOLDER_\d+\]\]");
             _logger.LogInformation("挿入後のプレースホルダー数: {Count}", placeholderPatterns.Count);
             foreach (System.Text.RegularExpressions.Match match in placeholderPatterns)
             {
                 _logger.LogInformation("プレースホルダー: {Pattern}", match.Value);
             }
 
-            // 5. GPT-4o で翻訳（プレースホルダーを保持）
+            // 6. GPT-4o で翻訳（プレースホルダーを保持）
             _logger.LogInformation("GPT-4o で翻訳中...");
 
             var translationResult = await TranslateMarkdownAsync(
-                markdownWithPlaceholders,
+                processedMarkdown,
                 targetLanguage,
                 options,
                 cancellationToken);
@@ -401,8 +449,8 @@ public class GptTranslatorService : IGptTranslatorService
                 return translationResult;
             }
 
-            // 6. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
-            var translatedTextWithImages = ReplacePlaceholdersWithImages(translationResult.TranslatedText, placeholderMapping);
+            // 7. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
+            var translatedTextWithImages = ReplacePlaceholdersWithImages(translationResult.TranslatedText, figureReplacements);
             
             // 置換後の画像参照をログ出力
             var finalImagePatterns = System.Text.RegularExpressions.Regex.Matches(translatedTextWithImages, @"!\[.*?\]\([^)]+\)");
@@ -425,7 +473,7 @@ public class GptTranslatorService : IGptTranslatorService
 
             return GptTranslationResult.Success(
                 originalFileName: document.FileName,
-                originalText: markdownWithPlaceholders,
+                originalText: processedMarkdown,
                 translatedText: translatedTextWithImages,
                 sourceLanguage: options.SourceLanguage ?? "auto",
                 targetLanguage: targetLanguage,
@@ -748,6 +796,118 @@ public class GptTranslatorService : IGptTranslatorService
             return ".tiff";
 
         return ".png";  // デフォルト
+    }
+
+    /// <summary>
+    /// Document Intelligence の Markdown 出力に含まれる図参照を検出し、プレースホルダーに置換します
+    /// 図参照パターン:
+    /// - :figure:N （Document Intelligence v4.0 形式）
+    /// - ![図N](figures/N) （Markdown 画像形式）
+    /// - <figure id="N">...</figure> （HTML figure タグ）
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) ReplaceFigureReferencesWithPlaceholders(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+        var processedMarkdown = markdown;
+        var replacementCount = 0;
+
+        if (imageInfos == null || imageInfos.Count == 0)
+        {
+            _logger.LogInformation("画像がないため図参照の置換をスキップします");
+            return (markdown, placeholderMapping);
+        }
+
+        // 各画像にプレースホルダーを割り当て
+        for (int i = 0; i < imageInfos.Count; i++)
+        {
+            var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
+            var imageMarkdown = $"![{imageInfos[i].Description}]({imageInfos[i].Url})";
+            placeholderMapping[placeholder] = imageMarkdown;
+        }
+
+        // パターン1: :figure:N 形式（Document Intelligence v4.0）
+        // 例: ":figure:0", ":figure:1"
+        var figureColonPattern = new System.Text.RegularExpressions.Regex(@":figure:(\d+)", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        processedMarkdown = figureColonPattern.Replace(processedMarkdown, match =>
+        {
+            var figureIndex = int.Parse(match.Groups[1].Value);
+            if (figureIndex < imageInfos.Count)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{figureIndex + 1:D3}]]";
+                replacementCount++;
+                _logger.LogInformation("図参照を置換: {Original} -> {Placeholder}", match.Value, placeholder);
+                return $"\n\n{placeholder}\n\n";
+            }
+            return match.Value;
+        });
+
+        // パターン2: ![...](figures/N) 形式
+        // 例: "![Figure 0](figures/0)", "![図1](figures/1)"
+        var figureImagePattern = new System.Text.RegularExpressions.Regex(@"!\[([^\]]*)\]\(figures?[/\\](\d+)[^)]*\)", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        processedMarkdown = figureImagePattern.Replace(processedMarkdown, match =>
+        {
+            var figureIndex = int.Parse(match.Groups[2].Value);
+            if (figureIndex < imageInfos.Count)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{figureIndex + 1:D3}]]";
+                replacementCount++;
+                _logger.LogInformation("図参照を置換: {Original} -> {Placeholder}", match.Value, placeholder);
+                return placeholder;
+            }
+            return match.Value;
+        });
+
+        // パターン3: <figure> タグ形式
+        // 例: <figure id="figure-0">...</figure>
+        var figureTagPattern = new System.Text.RegularExpressions.Regex(
+            @"<figure[^>]*id=[""']?figure-?(\d+)[""']?[^>]*>.*?</figure>", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+        
+        processedMarkdown = figureTagPattern.Replace(processedMarkdown, match =>
+        {
+            var figureIndex = int.Parse(match.Groups[1].Value);
+            if (figureIndex < imageInfos.Count)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{figureIndex + 1:D3}]]";
+                replacementCount++;
+                _logger.LogInformation("figure タグを置換: figure-{Index} -> {Placeholder}", figureIndex, placeholder);
+                return $"\n\n{placeholder}\n\n";
+            }
+            return match.Value;
+        });
+
+        // パターン4: ::: figure 形式（一部の Markdown 拡張）
+        // 例: ::: figure
+        //     内容
+        //     :::
+        var figureFencePattern = new System.Text.RegularExpressions.Regex(
+            @":::\s*figure[^\n]*\n(.*?):::", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+        
+        var fenceIndex = 0;
+        processedMarkdown = figureFencePattern.Replace(processedMarkdown, match =>
+        {
+            if (fenceIndex < imageInfos.Count)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{fenceIndex + 1:D3}]]";
+                replacementCount++;
+                fenceIndex++;
+                _logger.LogInformation("figure フェンスを置換 -> {Placeholder}", placeholder);
+                return $"\n\n{placeholder}\n\n";
+            }
+            fenceIndex++;
+            return match.Value;
+        });
+
+        _logger.LogInformation("図参照の置換完了: {Count} 件置換しました", replacementCount);
+
+        return (processedMarkdown, placeholderMapping);
     }
 
     /// <summary>
