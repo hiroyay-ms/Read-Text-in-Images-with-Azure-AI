@@ -225,8 +225,7 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// ドキュメントを翻訳します
-    /// Document Intelligence でテキストを抽出し、画像は PdfPig/OpenXML で別途抽出
-    /// 重要: Document Intelligence が OCR で抽出した画像内テキストは削除し、画像として表示
+    /// 処理を明確に分離：1.画像抽出 → 2.テキスト抽出 → 3.OCR削除 → 4.翻訳 → 5.画像復元
     /// </summary>
     public async Task<GptTranslationResult> TranslateDocumentAsync(
         IFormFile document,
@@ -239,12 +238,10 @@ public class GptTranslatorService : IGptTranslatorService
 
         try
         {
-            _logger.LogInformation(
-                "ドキュメント翻訳を開始します。ファイル名: {FileName}, ターゲット言語: {TargetLanguage}",
-                document.FileName,
-                targetLanguage);
+            _logger.LogInformation("=== ドキュメント翻訳開始 ===");
+            _logger.LogInformation("ファイル名: {FileName}, ターゲット言語: {TargetLanguage}", document.FileName, targetLanguage);
 
-            // 1. ドキュメントの検証
+            // ステップ0: ドキュメントの検証
             if (!await ValidateDocumentAsync(document))
             {
                 return GptTranslationResult.Failure(
@@ -262,8 +259,35 @@ public class GptTranslatorService : IGptTranslatorService
             var documentId = Path.GetFileNameWithoutExtension(document.FileName);
             var fileExtension = Path.GetExtension(document.FileName).ToLowerInvariant();
 
-            // 2. Document Intelligence でテキストを抽出（Markdown 形式）
-            _logger.LogInformation("Document Intelligence でテキストを抽出中...");
+            // ============================================
+            // ステップ1: 画像を抽出し、Blob Storage にアップロード
+            // ============================================
+            _logger.LogInformation("=== ステップ1: 画像抽出 ===");
+            
+            List<ExtractedImageInfo> imageInfos;
+            if (fileExtension == ".pdf")
+            {
+                imageInfos = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
+            }
+            else if (fileExtension == ".docx")
+            {
+                imageInfos = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+            }
+            else
+            {
+                imageInfos = new List<ExtractedImageInfo>();
+            }
+
+            _logger.LogInformation("画像抽出完了: {Count} 枚", imageInfos.Count);
+            for (int i = 0; i < imageInfos.Count; i++)
+            {
+                _logger.LogInformation("  画像[{Index}]: ページ {Page}", i, imageInfos[i].PageNumber);
+            }
+
+            // ============================================
+            // ステップ2: Document Intelligence でテキストを抽出
+            // ============================================
+            _logger.LogInformation("=== ステップ2: テキスト抽出（Document Intelligence） ===");
             
             var base64Content = Convert.ToBase64String(fileBytes);
             using var requestContent = RequestContent.Create(new { base64Source = base64Content });
@@ -281,8 +305,6 @@ public class GptTranslatorService : IGptTranslatorService
                 outputContentFormat: "markdown",
                 output: null,
                 context: requestContext);
-            
-            _logger.LogInformation("Document Intelligence API 呼び出し完了。Operation ID: {OperationId}", operation.Id);
 
             var responseJson = JsonDocument.Parse(operation.Value.ToStream());
             var rootElement = responseJson.RootElement;
@@ -312,38 +334,126 @@ public class GptTranslatorService : IGptTranslatorService
                 return GptTranslationResult.Failure("ドキュメントからテキストを抽出できませんでした。", document.FileName);
             }
 
-            _logger.LogInformation("Document Intelligence テキスト抽出完了。文字数: {Length}", extractedMarkdown.Length);
+            _logger.LogInformation("テキスト抽出完了: {Length} 文字", extractedMarkdown.Length);
 
-            // 3. PdfPig/OpenXML で画像を別途抽出（OCR は行わない）
-            _logger.LogInformation("ファイルから画像を抽出中... ファイル形式: {Extension}", fileExtension);
-
-            List<ExtractedImageInfo> imageInfos;
-            if (fileExtension == ".pdf")
+            // ============================================
+            // デバッグ: Document Intelligence の抽出結果をファイルに保存
+            // ============================================
+            _logger.LogInformation("=== Document Intelligence 抽出結果 ===");
+            
+            // デバッグ用：抽出されたMarkdown全体をファイルに保存
+            try
             {
-                imageInfos = await ExtractImagesFromPdfAsync(fileBytes, documentId, timestamp, cancellationToken);
+                var debugDir = Path.Combine(Path.GetTempPath(), "gpt-translator-debug");
+                Directory.CreateDirectory(debugDir);
+                var debugTimestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var debugFilePath = Path.Combine(debugDir, $"di_output_{debugTimestamp}.md");
+                File.WriteAllText(debugFilePath, extractedMarkdown);
+                _logger.LogInformation("[DI結果] 抽出Markdownを保存: {Path}", debugFilePath);
             }
-            else if (fileExtension == ".docx")
+            catch (Exception ex)
             {
-                imageInfos = await ExtractImagesFromDocxAsync(fileBytes, documentId, timestamp, cancellationToken);
+                _logger.LogWarning("[DI結果] デバッグファイル保存失敗: {Error}", ex.Message);
+            }
+            
+            // <figure>タグの検出確認
+            var figureTagPattern = new System.Text.RegularExpressions.Regex(
+                @"<figure[^>]*>[\s\S]*?</figure>",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var figureMatches = figureTagPattern.Matches(extractedMarkdown);
+            _logger.LogInformation("[DI結果] <figure>タグ検出数: {Count}", figureMatches.Count);
+            
+            for (int fIdx = 0; fIdx < figureMatches.Count; fIdx++)
+            {
+                var fMatch = figureMatches[fIdx];
+                _logger.LogInformation("[DI結果] <figure>[{Index}]: 位置={Start}, 長さ={Length}", fIdx, fMatch.Index, fMatch.Length);
+                _logger.LogInformation("[DI結果] <figure>[{Index}] 内容:\n---\n{Content}\n---", fIdx, 
+                    fMatch.Value.Length > 500 ? fMatch.Value.Substring(0, 500) + "..." : fMatch.Value);
+            }
+            
+            _logger.LogInformation("[DI結果] 抽出Markdown（最初の3000文字）:\n{Text}", 
+                extractedMarkdown.Length > 3000 ? extractedMarkdown.Substring(0, 3000) + "\n... (省略)" : extractedMarkdown);
+            
+            // figures プロパティの詳細をログ出力
+            if (analyzeResult.TryGetProperty("figures", out var figuresDebugElement) && figuresDebugElement.ValueKind == JsonValueKind.Array)
+            {
+                var figureCount = 0;
+                foreach (var fig in figuresDebugElement.EnumerateArray())
+                {
+                    _logger.LogInformation("[DI結果] === 図 {Index} ===", figureCount);
+                    
+                    // boundingRegions
+                    if (fig.TryGetProperty("boundingRegions", out var regions) && regions.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var region in regions.EnumerateArray())
+                        {
+                            if (region.TryGetProperty("pageNumber", out var pageNum))
+                            {
+                                _logger.LogInformation("[DI結果]   ページ: {Page}", pageNum.GetInt32());
+                            }
+                        }
+                    }
+                    
+                    // spans
+                    if (fig.TryGetProperty("spans", out var spans) && spans.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var span in spans.EnumerateArray())
+                        {
+                            if (span.TryGetProperty("offset", out var offset) && span.TryGetProperty("length", out var length))
+                            {
+                                var off = offset.GetInt32();
+                                var len = length.GetInt32();
+                                _logger.LogInformation("[DI結果]   スパン: offset={Offset}, length={Length}", off, len);
+                                
+                                // 実際のテキストを表示
+                                if (off >= 0 && off + len <= extractedMarkdown.Length)
+                                {
+                                    var spanText = extractedMarkdown.Substring(off, len);
+                                    _logger.LogInformation("[DI結果]   スパンテキスト:\n---\n{Text}\n---", 
+                                        spanText.Length > 500 ? spanText.Substring(0, 500) + "..." : spanText);
+                                }
+                            }
+                        }
+                    }
+                    
+                    figureCount++;
+                }
+                _logger.LogInformation("[DI結果] 図の総数: {Count}", figureCount);
             }
             else
             {
-                imageInfos = new List<ExtractedImageInfo>();
+                _logger.LogWarning("[DI結果] figures プロパティが見つかりません");
             }
 
-            var imageUrls = imageInfos.Select(i => i.Url).ToList();
-            _logger.LogInformation("画像抽出完了。画像数: {Count}", imageInfos.Count);
-
-            // 4. Document Intelligence の Markdown から図の OCR テキストを削除し、画像プレースホルダーを挿入
-            var (processedMarkdown, placeholderMapping) = RemoveFigureOcrAndInsertPlaceholders(extractedMarkdown, imageInfos);
+            // ============================================
+            // ステップ3: 図のスパン情報を取得
+            // ============================================
+            _logger.LogInformation("=== ステップ3: 図のスパン情報取得 ===");
             
-            _logger.LogInformation("図の OCR テキストを削除し、プレースホルダーを挿入しました。プレースホルダー数: {Count}", placeholderMapping.Count);
+            var figureSpans = ExtractFigureSpans(analyzeResult, extractedMarkdown);
+            _logger.LogInformation("図のスパン数: {Count}", figureSpans.Count);
 
-            // 5. GPT-4o で翻訳（プレースホルダーを保持）
-            _logger.LogInformation("GPT-4o で翻訳中...");
+            // ============================================
+            // ステップ4: 図のOCRテキストを削除し、プレースホルダーに置換
+            // ============================================
+            _logger.LogInformation("=== ステップ4: OCRテキスト削除＆プレースホルダー挿入 ===");
+            
+            var (markdownWithPlaceholders, placeholderToImageMap) = ReplaceFigureOcrWithPlaceholders(
+                extractedMarkdown, 
+                figureSpans, 
+                imageInfos);
+            
+            _logger.LogInformation("プレースホルダー挿入完了: {Count} 個", placeholderToImageMap.Count);
+            _logger.LogInformation("処理前Markdown長: {Before}, 処理後: {After}", 
+                extractedMarkdown.Length, markdownWithPlaceholders.Length);
 
+            // ============================================
+            // ステップ5: GPT-4o で翻訳
+            // ============================================
+            _logger.LogInformation("=== ステップ5: 翻訳（GPT-4o） ===");
+            
             var translationResult = await TranslateMarkdownAsync(
-                processedMarkdown,
+                markdownWithPlaceholders,
                 targetLanguage,
                 options,
                 cancellationToken);
@@ -353,32 +463,42 @@ public class GptTranslatorService : IGptTranslatorService
                 return translationResult;
             }
 
-            // 6. 翻訳後のテキストでプレースホルダーを実際の画像参照に置換
-            var translatedTextWithImages = ReplacePlaceholdersWithImages(translationResult.TranslatedText, placeholderMapping);
-            
-            var finalImagePatterns = System.Text.RegularExpressions.Regex.Matches(translatedTextWithImages, @"!\[.*?\]\([^)]+\)");
-            _logger.LogInformation("最終的な画像参照数: {Count}", finalImagePatterns.Count);
+            _logger.LogInformation("翻訳完了");
 
-            // 7. 翻訳結果を Blob Storage に保存
+            // ============================================
+            // ステップ6: プレースホルダーを画像URLに置換
+            // ============================================
+            _logger.LogInformation("=== ステップ6: プレースホルダーを画像に置換 ===");
+            
+            var translatedTextWithImages = ReplacePlaceholdersWithImages(
+                translationResult.TranslatedText, 
+                placeholderToImageMap);
+            
+            var finalImageCount = System.Text.RegularExpressions.Regex.Matches(
+                translatedTextWithImages, @"!\[.*?\]\([^)]+\)").Count;
+            _logger.LogInformation("最終画像数: {Count}", finalImageCount);
+
+            // ============================================
+            // ステップ7: 結果を保存
+            // ============================================
+            _logger.LogInformation("=== ステップ7: 結果保存 ===");
+            
             var blobName = $"{documentId}_{targetLanguage}_{timestamp}.md";
             var blobUrl = await SaveTranslationResultAsync(blobName, translatedTextWithImages, cancellationToken);
 
             var completedTime = DateTime.UtcNow;
 
-            _logger.LogInformation(
-                "ドキュメント翻訳が完了しました。Blob: {BlobName}, 処理時間: {Duration}秒",
-                blobName,
-                (completedTime - startTime).TotalSeconds);
+            _logger.LogInformation("=== 完了 === 処理時間: {Duration}秒", (completedTime - startTime).TotalSeconds);
 
             return GptTranslationResult.Success(
                 originalFileName: document.FileName,
-                originalText: processedMarkdown,
+                originalText: markdownWithPlaceholders,
                 translatedText: translatedTextWithImages,
                 sourceLanguage: options.SourceLanguage ?? "auto",
                 targetLanguage: targetLanguage,
                 blobName: blobName,
                 blobUrl: blobUrl,
-                imageUrls: imageUrls,
+                imageUrls: imageInfos.Select(i => i.Url).ToList(),
                 inputTokens: translationResult.InputTokens,
                 outputTokens: translationResult.OutputTokens,
                 startedAt: startTime,
@@ -429,12 +549,545 @@ public class GptTranslatorService : IGptTranslatorService
     #region Private Methods
 
     /// <summary>
-    /// Document Intelligence が OCR で抽出した図のテキストを削除し、代わりに画像プレースホルダーを挿入します
-    /// 画像内テキストは翻訳せず、実際の画像として表示します
+    /// ステップ3: Document Intelligence のレスポンスから図のスパン情報を抽出
     /// </summary>
-    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) RemoveFigureOcrAndInsertPlaceholders(
+    private List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)> ExtractFigureSpans(
+        JsonElement analyzeResult,
+        string markdown)
+    {
+        var figureSpans = new List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)>();
+
+        if (!analyzeResult.TryGetProperty("figures", out var figuresElement) || 
+            figuresElement.ValueKind != JsonValueKind.Array)
+        {
+            _logger.LogWarning("[ステップ3] figures プロパティが見つかりません");
+            return figureSpans;
+        }
+
+        // 各図の座標情報を収集
+        var figureBounds = new List<(int FigureIndex, int PageNumber, double MinY, double MaxY)>();
+
+        var figureIndex = 0;
+        foreach (var figure in figuresElement.EnumerateArray())
+        {
+            // ページ番号と座標を取得
+            int pageNumber = 0;
+            double minY = double.MaxValue, maxY = double.MinValue;
+            
+            if (figure.TryGetProperty("boundingRegions", out var regionsElement) && 
+                regionsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var region in regionsElement.EnumerateArray())
+                {
+                    if (region.TryGetProperty("pageNumber", out var pageNumElement))
+                    {
+                        pageNumber = pageNumElement.GetInt32();
+                    }
+                    if (region.TryGetProperty("polygon", out var polygonElement) && 
+                        polygonElement.ValueKind == JsonValueKind.Array)
+                    {
+                        var coords = polygonElement.EnumerateArray().Select(p => p.GetDouble()).ToArray();
+                        // polygon は [x1,y1, x2,y2, x3,y3, x4,y4] 形式
+                        for (int i = 1; i < coords.Length; i += 2)
+                        {
+                            minY = Math.Min(minY, coords[i]);
+                            maxY = Math.Max(maxY, coords[i]);
+                        }
+                    }
+                }
+            }
+
+            if (pageNumber > 0 && minY < double.MaxValue)
+            {
+                figureBounds.Add((figureIndex, pageNumber, minY, maxY));
+                _logger.LogInformation("[ステップ3] 図[{Index}] 座標: ページ={Page}, Y範囲={MinY:F2}-{MaxY:F2}", 
+                    figureIndex, pageNumber, minY, maxY);
+            }
+
+            // 図自体のスパン情報を取得
+            if (figure.TryGetProperty("spans", out var spansElement) && 
+                spansElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var span in spansElement.EnumerateArray())
+                {
+                    if (span.TryGetProperty("offset", out var offsetElement) && 
+                        span.TryGetProperty("length", out var lengthElement))
+                    {
+                        var offset = offsetElement.GetInt32();
+                        var length = lengthElement.GetInt32();
+
+                        var spanText = "";
+                        if (offset >= 0 && offset + length <= markdown.Length)
+                        {
+                            spanText = markdown.Substring(offset, length);
+                        }
+
+                        figureSpans.Add((figureIndex, pageNumber, offset, length, spanText));
+                        
+                        _logger.LogInformation("[ステップ3] 図[{Index}] スパン: offset={Offset}, length={Length}", 
+                            figureIndex, offset, length);
+                    }
+                }
+            }
+            figureIndex++;
+        }
+
+        // 図の座標範囲と重なるコンテンツのスパンを追加
+        // paragraphs を検索
+        if (analyzeResult.TryGetProperty("paragraphs", out var paragraphsElement) && 
+            paragraphsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var para in paragraphsElement.EnumerateArray())
+            {
+                AddOverlappingSpans(para, figureBounds, figureSpans, markdown, "段落", _logger);
+            }
+        }
+
+        // tables を検索
+        if (analyzeResult.TryGetProperty("tables", out var tablesElement) && 
+            tablesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var table in tablesElement.EnumerateArray())
+            {
+                AddOverlappingSpans(table, figureBounds, figureSpans, markdown, "テーブル", _logger);
+            }
+        }
+
+        // スパンをオフセット順にソートして重複を除去
+        var uniqueSpans = figureSpans
+            .GroupBy(s => s.Offset)
+            .Select(g => g.OrderByDescending(s => s.Length).First())
+            .OrderBy(s => s.Offset)
+            .ToList();
+
+        _logger.LogInformation("[ステップ3] 総スパン数: {Count} (重複除去後)", uniqueSpans.Count);
+        foreach (var s in uniqueSpans)
+        {
+            _logger.LogInformation("[ステップ3]   スパン: offset={Offset}, length={Length}, ページ={Page}", 
+                s.Offset, s.Length, s.PageNumber);
+        }
+
+        return uniqueSpans;
+    }
+
+    /// <summary>
+    /// 図の座標範囲と重なるコンテンツのスパンを追加
+    /// </summary>
+    private static void AddOverlappingSpans(
+        JsonElement element,
+        List<(int FigureIndex, int PageNumber, double MinY, double MaxY)> figureBounds,
+        List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)> figureSpans,
         string markdown,
+        string elementType,
+        ILogger logger)
+    {
+        int elementPage = 0;
+        double elementMinY = double.MaxValue, elementMaxY = double.MinValue;
+
+        if (element.TryGetProperty("boundingRegions", out var regions) && 
+            regions.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var region in regions.EnumerateArray())
+            {
+                if (region.TryGetProperty("pageNumber", out var pageNumElement))
+                {
+                    elementPage = pageNumElement.GetInt32();
+                }
+                if (region.TryGetProperty("polygon", out var polygonElement) && 
+                    polygonElement.ValueKind == JsonValueKind.Array)
+                {
+                    var coords = polygonElement.EnumerateArray().Select(p => p.GetDouble()).ToArray();
+                    for (int i = 1; i < coords.Length; i += 2)
+                    {
+                        elementMinY = Math.Min(elementMinY, coords[i]);
+                        elementMaxY = Math.Max(elementMaxY, coords[i]);
+                    }
+                }
+            }
+        }
+
+        // 図の座標範囲と重なるか確認
+        foreach (var fig in figureBounds)
+        {
+            if (fig.PageNumber != elementPage) continue;
+
+            // Y座標が重なるか確認（マージン10%を許容）
+            var figHeight = fig.MaxY - fig.MinY;
+            var margin = figHeight * 0.1;
+            var overlap = elementMinY <= fig.MaxY + margin && elementMaxY >= fig.MinY - margin;
+
+            if (overlap)
+            {
+                // このコンテンツのスパンを追加
+                if (element.TryGetProperty("spans", out var spansElement) && 
+                    spansElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var span in spansElement.EnumerateArray())
+                    {
+                        if (span.TryGetProperty("offset", out var offsetElement) && 
+                            span.TryGetProperty("length", out var lengthElement))
+                        {
+                            var offset = offsetElement.GetInt32();
+                            var length = lengthElement.GetInt32();
+
+                            // 既存のスパンと重複していないか確認
+                            var isDuplicate = figureSpans.Any(s => 
+                                s.Offset == offset && s.Length == length);
+                            
+                            if (!isDuplicate)
+                            {
+                                var spanText = "";
+                                if (offset >= 0 && offset + length <= markdown.Length)
+                                {
+                                    spanText = markdown.Substring(offset, length);
+                                }
+
+                                figureSpans.Add((fig.FigureIndex, elementPage, offset, length, spanText));
+                                
+                                logger.LogInformation("[ステップ3] 図[{FigIndex}]と重なる{Type}: offset={Offset}, length={Length}", 
+                                    fig.FigureIndex, elementType, offset, length);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// ステップ4: 図のOCRテキストをプレースホルダーに置換
+    /// 重なり合うスパンをマージし、各図に1つのプレースホルダーを割り当てる
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderToImage) ReplaceFigureOcrWithPlaceholders(
+        string markdown,
+        List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)> figureSpans,
         List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderToImage = new Dictionary<string, string>();
+
+        _logger.LogInformation("[ステップ4] ========== 処理開始 ==========");
+        _logger.LogInformation("[ステップ4] Markdown長: {Length}, スパン数: {SpanCount}, 画像数: {ImageCount}", 
+            markdown?.Length ?? 0, figureSpans.Count, imageInfos.Count);
+
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            return (markdown ?? "", placeholderToImage);
+        }
+
+        if (figureSpans.Count == 0)
+        {
+            _logger.LogWarning("[ステップ4] スパン情報がありません");
+            return (markdown, placeholderToImage);
+        }
+
+        // スパンを図インデックスでグループ化し、各図のスパンをマージ
+        var mergedSpansByFigure = new Dictionary<int, (int Offset, int Length)>();
+        
+        foreach (var span in figureSpans)
+        {
+            var figIdx = span.FigureIndex;
+            if (figIdx < 0) figIdx = -figIdx - 1; // 負のインデックスを正に変換
+            
+            if (!mergedSpansByFigure.ContainsKey(figIdx))
+            {
+                mergedSpansByFigure[figIdx] = (span.Offset, span.Length);
+            }
+            else
+            {
+                // 既存のスパンと現在のスパンをマージ（最小offsetから最大endまで）
+                var existing = mergedSpansByFigure[figIdx];
+                var existingEnd = existing.Offset + existing.Length;
+                var newEnd = span.Offset + span.Length;
+                
+                var mergedOffset = Math.Min(existing.Offset, span.Offset);
+                var mergedEnd = Math.Max(existingEnd, newEnd);
+                mergedSpansByFigure[figIdx] = (mergedOffset, mergedEnd - mergedOffset);
+            }
+        }
+
+        _logger.LogInformation("[ステップ4] マージ後の図スパン数: {Count}", mergedSpansByFigure.Count);
+        foreach (var kvp in mergedSpansByFigure.OrderBy(k => k.Key))
+        {
+            _logger.LogInformation("[ステップ4]   図[{Index}]: offset={Offset}, length={Length}", 
+                kvp.Key, kvp.Value.Offset, kvp.Value.Length);
+        }
+
+        // さらに、重なり合うスパンをマージ（図間で重なる場合）
+        var allSpans = mergedSpansByFigure
+            .Select(kvp => (FigureIndex: kvp.Key, Offset: kvp.Value.Offset, Length: kvp.Value.Length))
+            .OrderBy(s => s.Offset)
+            .ToList();
+
+        var finalSpans = new List<(int FigureIndex, int Offset, int Length)>();
+        foreach (var span in allSpans)
+        {
+            if (finalSpans.Count == 0)
+            {
+                finalSpans.Add(span);
+            }
+            else
+            {
+                var last = finalSpans[finalSpans.Count - 1];
+                var lastEnd = last.Offset + last.Length;
+                
+                // 重なり合う場合はマージ
+                if (span.Offset <= lastEnd)
+                {
+                    var newEnd = Math.Max(lastEnd, span.Offset + span.Length);
+                    finalSpans[finalSpans.Count - 1] = (last.FigureIndex, last.Offset, newEnd - last.Offset);
+                    _logger.LogInformation("[ステップ4] スパンをマージ: 図[{Index1}]と図[{Index2}]", last.FigureIndex, span.FigureIndex);
+                }
+                else
+                {
+                    finalSpans.Add(span);
+                }
+            }
+        }
+
+        _logger.LogInformation("[ステップ4] 最終スパン数: {Count}", finalSpans.Count);
+
+        // 後ろから置換（オフセットのずれを防ぐ）
+        var result = markdown;
+        for (int i = finalSpans.Count - 1; i >= 0; i--)
+        {
+            var span = finalSpans[i];
+            var placeholderNum = i + 1;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderNum:D3}]]";
+
+            // オフセットの検証
+            if (span.Offset < 0 || span.Offset >= result.Length)
+            {
+                _logger.LogWarning("[ステップ4] 無効なオフセット: {Offset}", span.Offset);
+                continue;
+            }
+
+            var endPos = Math.Min(span.Offset + span.Length, result.Length);
+
+            _logger.LogInformation("[ステップ4] 置換[{Index}]: offset={Offset}-{End} -> {Placeholder}", 
+                i, span.Offset, endPos, placeholder);
+
+            // 画像を割り当て
+            if (i < imageInfos.Count)
+            {
+                var img = imageInfos[i];
+                placeholderToImage[placeholder] = $"![{img.Description}]({img.Url})";
+                _logger.LogInformation("[ステップ4]   画像割り当て: ページ {Page}", img.PageNumber);
+            }
+            else
+            {
+                placeholderToImage[placeholder] = "";
+                _logger.LogWarning("[ステップ4]   対応する画像がありません");
+            }
+
+            // 文字列を切り取り・置換
+            var before = result.Substring(0, span.Offset);
+            var after = result.Substring(endPos);
+            result = before + $"\n\n{placeholder}\n\n" + after;
+        }
+
+        // 未割り当ての画像を末尾に追加
+        if (finalSpans.Count < imageInfos.Count)
+        {
+            _logger.LogInformation("[ステップ4] 未割り当て画像を末尾に追加: {Count} 件", imageInfos.Count - finalSpans.Count);
+            var sb = new System.Text.StringBuilder(result);
+
+            for (int i = finalSpans.Count; i < imageInfos.Count; i++)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{(i + 1):D3}]]";
+                var img = imageInfos[i];
+                placeholderToImage[placeholder] = $"![{img.Description}]({img.Url})";
+                sb.AppendLine();
+                sb.AppendLine(placeholder);
+            }
+
+            result = sb.ToString();
+        }
+
+        // 連続する空行を整理
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\n{3,}", "\n\n");
+
+        // デバッグ: 処理後のMarkdownをファイルに保存
+        try
+        {
+            var debugDir = Path.Combine(Path.GetTempPath(), "gpt-translator-debug");
+            var debugTimestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            File.WriteAllText(Path.Combine(debugDir, $"processed_{debugTimestamp}.md"), result);
+        }
+        catch { }
+
+        _logger.LogInformation("[ステップ4] ========== 完了 ==========");
+        _logger.LogInformation("[ステップ4] プレースホルダー数: {Count}", placeholderToImage.Count);
+
+        return (result, placeholderToImage);
+    }
+
+    /// <summary>
+    /// ステップ4（旧）: 図のOCRテキストをプレースホルダーに置換
+    /// 元のテキストを確実に削除し、プレースホルダーを挿入する
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderToImage) ReplaceFigureOcrWithPlaceholders_Old(
+        string markdown,
+        List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)> figureSpans,
+        List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderToImage = new Dictionary<string, string>();
+
+        if (string.IsNullOrWhiteSpace(markdown) || figureSpans.Count == 0)
+        {
+            _logger.LogWarning("[ステップ4] マークダウンが空、または図スパンがありません");
+            // 図がない場合でも画像があれば末尾に追加
+            if (imageInfos.Count > 0)
+            {
+                var sb = new System.Text.StringBuilder(markdown);
+                sb.AppendLine();
+                for (int i = 0; i < imageInfos.Count; i++)
+                {
+                    var ph = $"[[IMG_PLACEHOLDER_{(i + 1):D3}]]";
+                    var imgMd = $"![{imageInfos[i].Description}]({imageInfos[i].Url})";
+                    placeholderToImage[ph] = imgMd;
+                    sb.AppendLine();
+                    sb.AppendLine(ph);
+                }
+                return (sb.ToString(), placeholderToImage);
+            }
+            return (markdown, placeholderToImage);
+        }
+
+        _logger.LogInformation("[ステップ4] 処理開始: Markdown長={Length}, 図数={FigureCount}, 画像数={ImageCount}", 
+            markdown.Length, figureSpans.Count, imageInfos.Count);
+        
+        // 元のMarkdownを文字配列として保持
+        var chars = markdown.ToCharArray();
+        var deleted = new bool[chars.Length]; // 削除マーク
+
+        // オフセット昇順でソート
+        var sortedSpans = figureSpans.OrderBy(s => s.Offset).ToList();
+
+        // 各スパンの範囲を削除マーク
+        foreach (var span in sortedSpans)
+        {
+            if (span.Offset < 0 || span.Offset >= chars.Length)
+            {
+                _logger.LogWarning("[ステップ4] 無効なオフセット: {Offset}", span.Offset);
+                continue;
+            }
+
+            var endPos = Math.Min(span.Offset + span.Length, chars.Length);
+            
+            _logger.LogInformation("[ステップ4] 削除範囲: [{Start}..{End}]", span.Offset, endPos);
+            
+            for (int i = span.Offset; i < endPos; i++)
+            {
+                deleted[i] = true;
+            }
+        }
+
+        // 削除されなかった部分と、各スパン位置にプレースホルダーを挿入して再構築
+        var result = new System.Text.StringBuilder();
+        var lastWasDeleted = false;
+        var spanIndex = 0;
+        var processedSpanOffsets = new HashSet<int>();
+
+        for (int i = 0; i < chars.Length; i++)
+        {
+            if (deleted[i])
+            {
+                // 削除位置の開始時にプレースホルダーを挿入
+                if (!lastWasDeleted)
+                {
+                    // このオフセットに対応するスパンを見つける
+                    var matchingSpan = sortedSpans.FirstOrDefault(s => s.Offset == i);
+                    if (matchingSpan.Length > 0 && !processedSpanOffsets.Contains(matchingSpan.Offset))
+                    {
+                        spanIndex++;
+                        var placeholder = $"[[IMG_PLACEHOLDER_{spanIndex:D3}]]";
+                        result.Append($"\n\n{placeholder}\n\n");
+                        processedSpanOffsets.Add(matchingSpan.Offset);
+                        
+                        // 画像を割り当て
+                        var imgIndex = spanIndex - 1;
+                        if (imgIndex < imageInfos.Count)
+                        {
+                            var img = imageInfos[imgIndex];
+                            var imageMarkdown = $"![{img.Description}]({img.Url})";
+                            placeholderToImage[placeholder] = imageMarkdown;
+                            _logger.LogInformation("[ステップ4] {Placeholder} -> 画像[{Index}] (ページ {Page})", 
+                                placeholder, imgIndex, img.PageNumber);
+                        }
+                        else
+                        {
+                            placeholderToImage[placeholder] = "";
+                            _logger.LogWarning("[ステップ4] {Placeholder} に対応する画像がありません", placeholder);
+                        }
+                    }
+                }
+                lastWasDeleted = true;
+            }
+            else
+            {
+                result.Append(chars[i]);
+                lastWasDeleted = false;
+            }
+        }
+
+        // 未使用の画像を末尾に追加
+        var usedImageCount = spanIndex;
+        if (usedImageCount < imageInfos.Count)
+        {
+            _logger.LogInformation("[ステップ4] 未使用画像を末尾に追加: {Count} 件", imageInfos.Count - usedImageCount);
+            result.AppendLine();
+            
+            for (int i = usedImageCount; i < imageInfos.Count; i++)
+            {
+                var placeholder = $"[[IMG_PLACEHOLDER_{(i + 1):D3}]]";
+                var img = imageInfos[i];
+                var imageMarkdown = $"![{img.Description}]({img.Url})";
+                placeholderToImage[placeholder] = imageMarkdown;
+                result.AppendLine();
+                result.AppendLine(placeholder);
+                _logger.LogInformation("[ステップ4] 未使用: {Placeholder} -> 画像[{Index}]", placeholder, i);
+            }
+        }
+
+        var resultString = result.ToString();
+        
+        // 連続する空行を整理
+        resultString = System.Text.RegularExpressions.Regex.Replace(resultString, @"\n{3,}", "\n\n");
+
+        // 検証: 削除したテキストが結果に残っていないか
+        _logger.LogInformation("[ステップ4] 検証開始...");
+        foreach (var span in sortedSpans)
+        {
+            if (!string.IsNullOrWhiteSpace(span.Content) && span.Content.Length > 20)
+            {
+                // 最初の20文字で検証（プレースホルダーを除外）
+                var checkText = span.Content.Substring(0, Math.Min(20, span.Content.Length));
+                if (!checkText.Contains("[[IMG_PLACEHOLDER") && resultString.Contains(checkText))
+                {
+                    _logger.LogError("[ステップ4] ⚠️ 図[{Index}]のOCRテキストが残っています: '{Text}'", 
+                        span.FigureIndex, checkText);
+                }
+                else
+                {
+                    _logger.LogInformation("[ステップ4] ✓ 図[{Index}]のOCRテキストは削除されました", span.FigureIndex);
+                }
+            }
+        }
+
+        _logger.LogInformation("[ステップ4] 完了: プレースホルダー数={Count}, 処理前長={Before}, 処理後長={After}", 
+            placeholderToImage.Count, markdown.Length, resultString.Length);
+
+        return (resultString, placeholderToImage);
+    }
+
+    /// <summary>
+    /// スパン情報を使って図のOCRテキストを確実に削除し、プレースホルダーを挿入します
+    /// ページ番号を使って画像との正確な対応付けを行います
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) RemoveFigureOcrBySpans(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos,
+        List<(int FigureIndex, int PageNumber, int Offset, int Length, string Content)> figureInfos)
     {
         var placeholderMapping = new Dictionary<string, string>();
 
@@ -443,129 +1096,573 @@ public class GptTranslatorService : IGptTranslatorService
             return (markdown, placeholderMapping);
         }
 
-        // 各画像にプレースホルダーを割り当て
-        for (int i = 0; i < imageInfos.Count; i++)
-        {
-            var placeholder = $"[[IMG_PLACEHOLDER_{i + 1:D3}]]";
-            var imageMarkdown = $"![{imageInfos[i].Description}]({imageInfos[i].Url})";
-            placeholderMapping[placeholder] = imageMarkdown;
-        }
+        _logger.LogInformation("[スパン削除] 開始: Markdown長={Length}, 画像数={ImageCount}, 図数={FigureCount}", 
+            markdown.Length, imageInfos.Count, figureInfos.Count);
 
-        var result = markdown;
 
-        // 1. Document Intelligence の図参照パターンを検出して削除/置換
-        // パターン例:
-        // - ![](figures/0) または ![alt text](figures/N)
-        // - :figure:N または :figure: N
-        // - <figure id="N">...</figure>
-        // - 図 N: テキスト... のような OCR テキスト
-
-        // 図参照パターン: ![...](figures/N)
-        var figureImagePattern = new System.Text.RegularExpressions.Regex(
-            @"!\[[^\]]*\]\(figures/\d+\)",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        result = figureImagePattern.Replace(result, "");
-
-        // :figure:N パターン
-        var colonFigurePattern = new System.Text.RegularExpressions.Regex(
-            @":figure:\s*\d+",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        result = colonFigurePattern.Replace(result, "");
-
-        // <figure>...</figure> タグ
-        var figureTagPattern = new System.Text.RegularExpressions.Regex(
-            @"<figure[^>]*>[\s\S]*?</figure>",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        result = figureTagPattern.Replace(result, "");
-
-        // <!-- image --> コメント
-        var imageCommentPattern = new System.Text.RegularExpressions.Regex(
-            @"<!--\s*image[^>]*-->",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        result = imageCommentPattern.Replace(result, "");
-
-        _logger.LogInformation("[図参照削除] 図参照パターンを削除しました");
-
-        // 2. ページごとに画像をグループ化
-        var imagesByPage = imageInfos
-            .Select((img, idx) => new { Image = img, Index = idx })
-            .GroupBy(x => x.Image.PageNumber)
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Image.IndexInPage).ToList());
-
-        _logger.LogInformation("[図参照削除] 画像数={ImageCount}, ページ分布={Distribution}", 
-            imageInfos.Count,
-            string.Join(", ", imagesByPage.Select(kvp => $"P{kvp.Key}:{kvp.Value.Count}")));
-
-        // 3. ページ区切り（水平線または見出し）を検出して、画像プレースホルダーを挿入
-        var lines = result.Split('\n');
-        var builder = new System.Text.StringBuilder();
-        var currentPage = 1;
-        var insertedImages = new HashSet<int>();
-
-        for (int i = 0; i < lines.Length; i++)
-        {
-            var line = lines[i];
-            builder.AppendLine(line);
-
-            // ページ区切りを検出（水平線）
-            var trimmedLine = line.Trim();
-            bool isPageBreak = trimmedLine == "---" || trimmedLine == "***" || trimmedLine == "___";
-            
-            // または大見出しを検出（ページの区切りとして使用）
-            bool isHeading = trimmedLine.StartsWith("# ") || trimmedLine.StartsWith("## ");
-
-            if (isPageBreak || isHeading)
-            {
-                // このページの画像を挿入
-                if (imagesByPage.TryGetValue(currentPage, out var pageImages))
-                {
-                    builder.AppendLine();
-                    foreach (var item in pageImages)
-                    {
-                        if (!insertedImages.Contains(item.Index))
-                        {
-                            var placeholder = $"[[IMG_PLACEHOLDER_{item.Index + 1:D3}]]";
-                            builder.AppendLine(placeholder);
-                            builder.AppendLine();
-                            insertedImages.Add(item.Index);
-                            _logger.LogInformation("[図参照削除] ページ {Page} の画像 {Index} のプレースホルダーを挿入", currentPage, item.Index + 1);
-                        }
-                    }
-                }
-                
-                if (isPageBreak)
-                {
-                    currentPage++;
-                }
-            }
-        }
-
-        // 4. まだ挿入されていない画像を末尾に追加
-        var remainingImages = Enumerable.Range(0, imageInfos.Count)
-            .Where(idx => !insertedImages.Contains(idx))
+        // 図をオフセット昇順でソート
+        var sortedFigures = figureInfos
+            .OrderBy(f => f.Offset)
             .ToList();
 
-        if (remainingImages.Count > 0)
+        // 画像をページ番号でグループ化（同じページに複数の画像がある場合に対応）
+        var imagesByPage = imageInfos
+            .GroupBy(i => i.PageNumber)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        
+        _logger.LogInformation("[スパン削除] ページ別画像: {Pages}", 
+            string.Join(", ", imagesByPage.Select(kv => $"ページ{kv.Key}={kv.Value.Count}枚")));
+
+        // 結果を構築
+        var resultBuilder = new System.Text.StringBuilder();
+        var lastEndPosition = 0;
+        var usedImageIndices = new HashSet<int>();
+        var placeholderIndex = 0;
+
+        // ページごとに使用済み画像インデックスを追跡
+        var pageImageIndex = new Dictionary<int, int>();
+
+        foreach (var figure in sortedFigures)
         {
-            builder.AppendLine();
-            builder.AppendLine("---");
-            builder.AppendLine();
-            foreach (var idx in remainingImages)
+            // オフセットの検証
+            if (figure.Offset < 0 || figure.Offset > markdown.Length)
             {
-                var placeholder = $"[[IMG_PLACEHOLDER_{idx + 1:D3}]]";
-                builder.AppendLine(placeholder);
-                builder.AppendLine();
-                _logger.LogInformation("[図参照削除] 画像 {Index} のプレースホルダーを末尾に追加", idx + 1);
+                _logger.LogWarning("[スパン削除] 無効なオフセット: {Offset}", figure.Offset);
+                continue;
+            }
+
+            // スパン開始位置が前のスパン終了位置より前の場合はスキップ
+            if (figure.Offset < lastEndPosition)
+            {
+                _logger.LogWarning("[スパン削除] スパンが重複: Offset={Offset} < LastEnd={LastEnd}", figure.Offset, lastEndPosition);
+                continue;
+            }
+
+            var endPos = Math.Min(figure.Offset + figure.Length, markdown.Length);
+            
+            // スパンより前のテキストを追加
+            if (figure.Offset > lastEndPosition)
+            {
+                var beforeText = markdown.Substring(lastEndPosition, figure.Offset - lastEndPosition);
+                resultBuilder.Append(beforeText);
+            }
+
+            // プレースホルダーを作成
+            placeholderIndex++;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+            
+            // 削除されるテキストをログ出力
+            var removedText = markdown.Substring(figure.Offset, endPos - figure.Offset);
+            _logger.LogInformation("[スパン削除] 図{FigureIndex}: offset={Offset}, length={Length} を削除", 
+                figure.FigureIndex, figure.Offset, figure.Length);
+            _logger.LogInformation("[スパン削除] 削除テキスト: '{Text}'", 
+                removedText.Length > 100 ? removedText.Substring(0, 100).Replace("\n", "\\n") + "..." : removedText.Replace("\n", "\\n"));
+
+            // プレースホルダーを追加
+            resultBuilder.Append($"\n\n{placeholder}\n\n");
+
+            // ページ番号で画像を割り当て
+            ExtractedImageInfo? matchedImage = null;
+            if (figure.PageNumber > 0 && imagesByPage.TryGetValue(figure.PageNumber, out var pageImages))
+            {
+                // そのページで次に使用可能な画像を取得
+                if (!pageImageIndex.ContainsKey(figure.PageNumber))
+                {
+                    pageImageIndex[figure.PageNumber] = 0;
+                }
+                
+                var imgIdx = pageImageIndex[figure.PageNumber];
+                if (imgIdx < pageImages.Count)
+                {
+                    matchedImage = pageImages[imgIdx];
+                    pageImageIndex[figure.PageNumber]++;
+                    
+                    var globalIndex = imageInfos.IndexOf(matchedImage);
+                    if (globalIndex >= 0)
+                    {
+                        usedImageIndices.Add(globalIndex);
+                    }
+                }
+            }
+
+            if (matchedImage != null)
+            {
+                var imageMarkdown = $"![{matchedImage.Description}]({matchedImage.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                _logger.LogInformation("[スパン削除] {Placeholder} -> 画像 (ページ {Page}) ✓", 
+                    placeholder, matchedImage.PageNumber);
+            }
+            else
+            {
+                // ページ番号でマッチしない場合は順番で割り当て
+                var availableImage = imageInfos
+                    .Select((img, idx) => new { img, idx })
+                    .FirstOrDefault(x => !usedImageIndices.Contains(x.idx));
+                    
+                if (availableImage != null)
+                {
+                    var imageMarkdown = $"![{availableImage.img.Description}]({availableImage.img.Url})";
+                    placeholderMapping[placeholder] = imageMarkdown;
+                    usedImageIndices.Add(availableImage.idx);
+                    _logger.LogInformation("[スパン削除] {Placeholder} -> 画像 (順番割り当て、ページ {Page})", 
+                        placeholder, availableImage.img.PageNumber);
+                }
+                else
+                {
+                    placeholderMapping[placeholder] = "";
+                    _logger.LogWarning("[スパン削除] {Placeholder} に対応する画像がありません", placeholder);
+                }
+            }
+
+            lastEndPosition = endPos;
+        }
+
+        // 残りのテキストを追加
+        if (lastEndPosition < markdown.Length)
+        {
+            resultBuilder.Append(markdown.Substring(lastEndPosition));
+        }
+
+        var result = resultBuilder.ToString();
+
+        // 未使用の画像を末尾に追加
+        var unusedImages = imageInfos
+            .Select((img, idx) => new { img, idx })
+            .Where(x => !usedImageIndices.Contains(x.idx))
+            .ToList();
+
+        if (unusedImages.Count > 0)
+        {
+            _logger.LogInformation("[スパン削除] 未使用画像を末尾に追加: {Count} 件", unusedImages.Count);
+            var sb = new System.Text.StringBuilder(result);
+            sb.AppendLine();
+            
+            foreach (var item in unusedImages)
+            {
+                placeholderIndex++;
+                var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+                var imageMarkdown = $"![{item.img.Description}]({item.img.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                sb.AppendLine();
+                sb.AppendLine(placeholder);
+                _logger.LogInformation("[スパン削除] 未使用画像 -> {Placeholder} (ページ {Page})", placeholder, item.img.PageNumber);
+            }
+            
+            result = sb.ToString();
+        }
+
+        // 連続する空行を整理
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\n{3,}", "\n\n");
+
+        _logger.LogInformation("[スパン削除] 完了: プレースホルダー数={Count}, 元のMarkdown長={OrigLen}, 処理後長={NewLen}", 
+            placeholderMapping.Count, markdown.Length, result.Length);
+
+        // 検証: 削除したテキストが結果に残っていないか確認
+        foreach (var figure in sortedFigures)
+        {
+            if (!string.IsNullOrWhiteSpace(figure.Content) && figure.Content.Length > 30)
+            {
+                // 最初の30文字で検証
+                var checkText = figure.Content.Substring(0, Math.Min(30, figure.Content.Length));
+                var normalizedCheck = System.Text.RegularExpressions.Regex.Replace(checkText, @"\s+", " ").Trim();
+                var normalizedResult = System.Text.RegularExpressions.Regex.Replace(result, @"\s+", " ");
+                
+                if (normalizedResult.Contains(normalizedCheck))
+                {
+                    _logger.LogError("[スパン削除] ⚠️ 図{FigureIndex}のOCRテキストが削除されていません: '{Text}'", 
+                        figure.FigureIndex, normalizedCheck);
+                }
+                else
+                {
+                    _logger.LogInformation("[スパン削除] ✓ 図{FigureIndex}のOCRテキストは正常に削除されました", figure.FigureIndex);
+                }
             }
         }
 
-        // 5. 連続する空行を整理
-        var finalResult = System.Text.RegularExpressions.Regex.Replace(
-            builder.ToString(), 
-            @"\n{3,}", 
-            "\n\n");
+        return (result, placeholderMapping);
+    }
 
-        return (finalResult, placeholderMapping);
+    /// <summary>
+    /// Document Intelligence が OCR で抽出した図のテキストを削除し、代わりに画像プレースホルダーを挿入します
+    /// 画像内テキストは翻訳せず、実際の画像として表示します
+    /// 正規表現で図関連コンテンツを直接検出・削除します
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) RemoveFigureOcrAndInsertPlaceholders(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos,
+        List<(int Offset, int Length, int FigureIndex, string Content)> figureSpans)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            return (markdown, placeholderMapping);
+        }
+
+        _logger.LogInformation("[図削除] 開始: Markdown長={Length}, 画像数={ImageCount}", 
+            markdown.Length, imageInfos.Count);
+
+        // 元のMarkdownをログに出力（デバッグ用）
+        _logger.LogDebug("[図削除] 元のMarkdown:\n{Markdown}", markdown);
+
+        var result = markdown;
+        var placeholderIndex = 0;
+        var usedImageIndices = new HashSet<int>();
+
+        // パターン1: <figure>...</figure> セクション全体を削除
+        // このパターンは <figure> タグから </figure> までのすべてのコンテンツをキャプチャ
+        var figureTagPattern = new System.Text.RegularExpressions.Regex(
+            @"<figure[^>]*>[\s\S]*?</figure>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
+        
+        var figureTagMatches = figureTagPattern.Matches(result);
+        _logger.LogInformation("[図削除] <figure>タグセクション検出数: {Count}", figureTagMatches.Count);
+        
+        foreach (System.Text.RegularExpressions.Match match in figureTagMatches)
+        {
+            _logger.LogInformation("[図削除] <figure>セクション発見: 位置={Index}, 長さ={Length}, 内容='{Content}'", 
+                match.Index, match.Length, 
+                match.Value.Length > 100 ? match.Value.Substring(0, 100).Replace("\n", "\\n") + "..." : match.Value.Replace("\n", "\\n"));
+        }
+        
+        result = figureTagPattern.Replace(result, match =>
+        {
+            placeholderIndex++;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+            
+            // 対応する画像を割り当て
+            var imgIndex = placeholderIndex - 1;
+            if (imgIndex < imageInfos.Count && !usedImageIndices.Contains(imgIndex))
+            {
+                var imageInfo = imageInfos[imgIndex];
+                var imageMarkdown = $"![{imageInfo.Description}]({imageInfo.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                usedImageIndices.Add(imgIndex);
+                _logger.LogInformation("[図削除] <figure> -> {Placeholder} (画像: ページ {Page})", placeholder, imageInfo.PageNumber);
+            }
+            else
+            {
+                placeholderMapping[placeholder] = "";
+                _logger.LogWarning("[図削除] <figure> -> {Placeholder} (対応画像なし)", placeholder);
+            }
+            
+            return $"\n\n{placeholder}\n\n";
+        });
+
+        // パターン2: ![...](figures/N) 参照を削除（<figure>タグなしで存在する場合）
+        var figureRefPattern = new System.Text.RegularExpressions.Regex(
+            @"!\[[^\]]*\]\(figures/\d+\)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        var figureRefMatches = figureRefPattern.Matches(result);
+        _logger.LogInformation("[図削除] ![](figures/N)パターン検出数: {Count}", figureRefMatches.Count);
+        
+        foreach (System.Text.RegularExpressions.Match match in figureRefMatches)
+        {
+            _logger.LogInformation("[図削除] 図参照発見: '{Content}'", match.Value);
+        }
+        
+        result = figureRefPattern.Replace(result, match =>
+        {
+            placeholderIndex++;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+            
+            // 対応する画像を割り当て
+            var imgIndex = placeholderIndex - 1;
+            if (imgIndex < imageInfos.Count && !usedImageIndices.Contains(imgIndex))
+            {
+                var imageInfo = imageInfos[imgIndex];
+                var imageMarkdown = $"![{imageInfo.Description}]({imageInfo.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                usedImageIndices.Add(imgIndex);
+                _logger.LogInformation("[図削除] figures参照 -> {Placeholder} (画像: ページ {Page})", placeholder, imageInfo.PageNumber);
+            }
+            else
+            {
+                placeholderMapping[placeholder] = "";
+            }
+            
+            return $"\n\n{placeholder}\n\n";
+        });
+
+        // パターン3: 図のキャプション行を削除（"Figure N:" または "図 N:" で始まる行）
+        var captionPattern = new System.Text.RegularExpressions.Regex(
+            @"^.*(?:Figure|図)\s*\d+[:\s].*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
+        
+        var captionMatches = captionPattern.Matches(result);
+        _logger.LogInformation("[図削除] キャプション行検出数: {Count}", captionMatches.Count);
+        
+        result = captionPattern.Replace(result, "");
+
+        // 未使用の画像を末尾に追加
+        var unusedImages = imageInfos
+            .Select((img, idx) => new { img, idx })
+            .Where(x => !usedImageIndices.Contains(x.idx))
+            .ToList();
+
+        if (unusedImages.Count > 0)
+        {
+            _logger.LogInformation("[図削除] 未使用画像を末尾に追加: {Count} 件", unusedImages.Count);
+            var sb = new System.Text.StringBuilder(result);
+            sb.AppendLine();
+            sb.AppendLine();
+            
+            foreach (var item in unusedImages)
+            {
+                placeholderIndex++;
+                var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+                var imageMarkdown = $"![{item.img.Description}]({item.img.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                sb.AppendLine(placeholder);
+                sb.AppendLine();
+                _logger.LogInformation("[図削除] 未使用画像 -> {Placeholder} (画像: ページ {Page})", placeholder, item.img.PageNumber);
+            }
+            
+            result = sb.ToString();
+        }
+
+        // 連続する空行を整理
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\n{3,}", "\n\n");
+
+        _logger.LogInformation("[図削除] 完了: プレースホルダー数={Count}, 使用画像数={UsedCount}", 
+            placeholderMapping.Count, usedImageIndices.Count);
+        
+        // 処理後のMarkdownをログに出力（デバッグ用）
+        _logger.LogDebug("[図削除] 処理後のMarkdown:\n{Markdown}", result);
+
+        return (result, placeholderMapping);
+    }
+
+    /// <summary>
+    /// スパン情報（offset, length）を使って図のOCRテキストをプレースホルダーに置換
+    /// 置換後に元のテキストが確実に削除されたことを検証します
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) ReplaceUsingSpans(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos,
+        List<(int Offset, int Length, int FigureIndex, string Content)> figureSpans)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+        
+        // スパンをオフセット昇順でソート
+        var sortedSpansAsc = figureSpans
+            .OrderBy(s => s.Offset)
+            .ToList();
+        
+        _logger.LogInformation("[スパン置換] {Count} 個のスパンを処理します", sortedSpansAsc.Count);
+        
+        // 各スパンの詳細をログ出力
+        for (int i = 0; i < sortedSpansAsc.Count; i++)
+        {
+            var span = sortedSpansAsc[i];
+            _logger.LogInformation("[スパン置換] スパン[{Index}]: FigureIndex={FigureIndex}, Offset={Offset}, Length={Length}", 
+                i, span.FigureIndex, span.Offset, span.Length);
+        }
+        
+        // 画像とスパンのマッピングを事前に作成（昇順で対応付け）
+        // スパンのインデックス順に画像を割り当てる
+        var spanIndexToImageMap = new Dictionary<int, int>(); // spanIndex -> imageIndex
+        for (int i = 0; i < sortedSpansAsc.Count && i < imageInfos.Count; i++)
+        {
+            spanIndexToImageMap[i] = i;
+            _logger.LogInformation("[スパン置換] スパン[{SpanIndex}] -> 画像[{ImageIndex}] (ページ {Page})", 
+                i, i, imageInfos[i].PageNumber);
+        }
+        
+        var usedImageIndices = new HashSet<int>();
+        
+        // 新しい文字列を構築（元のマークダウンをスパン位置で分割して再構築）
+        var resultBuilder = new System.Text.StringBuilder();
+        var lastEndPosition = 0;
+        
+        for (int spanIndex = 0; spanIndex < sortedSpansAsc.Count; spanIndex++)
+        {
+            var span = sortedSpansAsc[spanIndex];
+            
+            // オフセットの検証
+            if (span.Offset < 0 || span.Offset > markdown.Length)
+            {
+                _logger.LogWarning("[スパン置換] 無効なオフセット: {Offset}, Markdown長: {Length}", span.Offset, markdown.Length);
+                continue;
+            }
+            
+            // スパン開始位置が前のスパン終了位置より前の場合はスキップ（重複防止）
+            if (span.Offset < lastEndPosition)
+            {
+                _logger.LogWarning("[スパン置換] スパンが重複しています: Offset={Offset} < LastEnd={LastEnd}", span.Offset, lastEndPosition);
+                continue;
+            }
+            
+            var endPos = Math.Min(span.Offset + span.Length, markdown.Length);
+            var figureText = markdown.Substring(span.Offset, endPos - span.Offset);
+            
+            // スパンより前のテキストを追加
+            if (span.Offset > lastEndPosition)
+            {
+                var beforeText = markdown.Substring(lastEndPosition, span.Offset - lastEndPosition);
+                resultBuilder.Append(beforeText);
+            }
+            
+            // プレースホルダー番号はスパンインデックス + 1 を使用
+            var placeholderNum = spanIndex + 1;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderNum:D3}]]";
+            
+            _logger.LogInformation("[スパン置換] スパン[{SpanIndex}]: offset={Offset}, length={Length}, テキスト先頭='{TextStart}'", 
+                spanIndex, span.Offset, span.Length, 
+                figureText.Length > 50 ? figureText.Substring(0, 50).Replace("\n", "\\n") + "..." : figureText.Replace("\n", "\\n"));
+            
+            // プレースホルダーを追加
+            resultBuilder.Append($"\n\n{placeholder}\n\n");
+            
+            // 対応する画像を割り当て
+            if (spanIndexToImageMap.TryGetValue(spanIndex, out var imageIndex) && !usedImageIndices.Contains(imageIndex))
+            {
+                var imageInfo = imageInfos[imageIndex];
+                var imageMarkdown = $"![{imageInfo.Description}]({imageInfo.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                usedImageIndices.Add(imageIndex);
+                
+                _logger.LogInformation("[スパン置換] {Placeholder} -> 画像[{ImageIndex}] (ページ {Page}) ✓", 
+                    placeholder, imageIndex, imageInfo.PageNumber);
+            }
+            else
+            {
+                placeholderMapping[placeholder] = "";
+                _logger.LogWarning("[スパン置換] {Placeholder} に対応する画像がありません", placeholder);
+            }
+            
+            lastEndPosition = endPos;
+        }
+        
+        // 残りのテキストを追加
+        if (lastEndPosition < markdown.Length)
+        {
+            resultBuilder.Append(markdown.Substring(lastEndPosition));
+        }
+        
+        // 未使用の画像を末尾に追加
+        var unusedImages = imageInfos
+            .Select((img, idx) => new { img, idx })
+            .Where(x => !usedImageIndices.Contains(x.idx))
+            .ToList();
+        
+        if (unusedImages.Count > 0)
+        {
+            _logger.LogInformation("[スパン置換] 未使用画像を末尾に追加: {Count} 件", unusedImages.Count);
+            resultBuilder.AppendLine();
+            resultBuilder.AppendLine();
+            
+            foreach (var item in unusedImages)
+            {
+                var placeholderNum = sortedSpansAsc.Count + item.idx + 1;
+                var placeholder = $"[[IMG_PLACEHOLDER_{placeholderNum:D3}]]";
+                var imageMarkdown = $"![{item.img.Description}]({item.img.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                resultBuilder.AppendLine(placeholder);
+                resultBuilder.AppendLine();
+                
+                _logger.LogInformation("[スパン置換] 未使用画像: {Placeholder} -> 画像[{ImageIndex}]", placeholder, item.idx);
+            }
+        }
+        
+        var resultString = resultBuilder.ToString();
+        
+        // 置換後の検証: 元のOCRテキストが結果に残っていないことを確認
+        _logger.LogInformation("[スパン置換] 置換後の検証開始...");
+        foreach (var span in sortedSpansAsc)
+        {
+            if (!string.IsNullOrWhiteSpace(span.Content) && span.Content.Length > 20)
+            {
+                // OCRテキストの最初の部分（最大50文字）で検索
+                var searchText = span.Content.Length > 50 ? span.Content.Substring(0, 50) : span.Content;
+                // 改行や空白を正規化して検索
+                var normalizedSearch = System.Text.RegularExpressions.Regex.Replace(searchText, @"\s+", " ").Trim();
+                var normalizedResult = System.Text.RegularExpressions.Regex.Replace(resultString, @"\s+", " ");
+                
+                if (normalizedResult.Contains(normalizedSearch))
+                {
+                    _logger.LogWarning("[スパン置換] ⚠️ 図{Index}のOCRテキストが結果に残っています: '{Text}'", 
+                        span.FigureIndex, normalizedSearch.Length > 30 ? normalizedSearch.Substring(0, 30) + "..." : normalizedSearch);
+                }
+                else
+                {
+                    _logger.LogInformation("[スパン置換] ✓ 図{Index}のOCRテキストは正常に削除されました", span.FigureIndex);
+                }
+            }
+        }
+        
+        _logger.LogInformation("[スパン置換] 完了: プレースホルダー数={Count}, 使用画像数={UsedCount}", 
+            placeholderMapping.Count, usedImageIndices.Count);
+        
+        return (resultString, placeholderMapping);
+    }
+
+    /// <summary>
+    /// パターンマッチングで図参照を検出してプレースホルダーに置換（スパン情報がない場合のフォールバック）
+    /// </summary>
+    private (string ProcessedMarkdown, Dictionary<string, string> PlaceholderMapping) ReplaceUsingPatternMatching(
+        string markdown,
+        List<ExtractedImageInfo> imageInfos)
+    {
+        var placeholderMapping = new Dictionary<string, string>();
+        var usedImageIndices = new HashSet<int>();
+        var placeholderIndex = 0;
+
+        // 図参照パターン: ![...](figures/N)
+        var figureRefPattern = new System.Text.RegularExpressions.Regex(
+            @"!\[([^\]]*)\]\(figures/(\d+)\)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        
+        var result = figureRefPattern.Replace(markdown, match =>
+        {
+            placeholderIndex++;
+            var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+            
+            var imgIndex = placeholderIndex - 1;
+            if (imgIndex < imageInfos.Count && !usedImageIndices.Contains(imgIndex))
+            {
+                var imageInfo = imageInfos[imgIndex];
+                var imageMarkdown = $"![{imageInfo.Description}]({imageInfo.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                usedImageIndices.Add(imgIndex);
+            }
+            else
+            {
+                placeholderMapping[placeholder] = "";
+            }
+            
+            return $"\n\n{placeholder}\n\n";
+        });
+        
+        // 未使用の画像を末尾に追加
+        var unusedImages = imageInfos
+            .Select((img, idx) => new { img, idx })
+            .Where(x => !usedImageIndices.Contains(x.idx))
+            .ToList();
+        
+        if (unusedImages.Count > 0)
+        {
+            var sb = new System.Text.StringBuilder(result);
+            sb.AppendLine();
+            sb.AppendLine();
+            
+            foreach (var item in unusedImages)
+            {
+                placeholderIndex++;
+                var placeholder = $"[[IMG_PLACEHOLDER_{placeholderIndex:D3}]]";
+                var imageMarkdown = $"![{item.img.Description}]({item.img.Url})";
+                placeholderMapping[placeholder] = imageMarkdown;
+                sb.AppendLine(placeholder);
+                sb.AppendLine();
+            }
+            
+            result = sb.ToString();
+        }
+        
+        _logger.LogInformation("[パターン置換] 完了: プレースホルダー数={Count}", placeholderMapping.Count);
+        
+        return (result, placeholderMapping);
     }
 
     /// <summary>
@@ -1396,6 +2493,7 @@ public class GptTranslatorService : IGptTranslatorService
 
     /// <summary>
     /// 翻訳後のテキストでプレースホルダーを実際の画像参照に置換します
+    /// GPTが形式を変更する可能性があるため、複数のパターンに対応
     /// </summary>
     private string ReplacePlaceholdersWithImages(string translatedText, Dictionary<string, string> placeholderMapping)
     {
@@ -1404,33 +2502,74 @@ public class GptTranslatorService : IGptTranslatorService
             return translatedText;
         }
 
+        _logger.LogInformation("[ステップ6] プレースホルダー置換開始: {Count} 個", placeholderMapping.Count);
+        
+        // 翻訳後のテキストに含まれるプレースホルダーパターンをログ出力
+        // シングルブラケットとダブルブラケット両方に対応
+        var allPlaceholderPatterns = new System.Text.RegularExpressions.Regex(
+            @"\[+(?:IMG_PLACEHOLDER|IMAGE:?(?:IMG_PLACEHOLDER)?|PLACEHOLDER)[_:\s]*(\d+)\]+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var foundPatterns = allPlaceholderPatterns.Matches(translatedText);
+        _logger.LogInformation("[ステップ6] 検出されたパターン数: {Count}", foundPatterns.Count);
+        foreach (System.Text.RegularExpressions.Match match in foundPatterns)
+        {
+            _logger.LogInformation("[ステップ6]   発見: '{Pattern}' at position {Pos}", match.Value, match.Index);
+        }
+
         var result = translatedText;
         var replacedCount = 0;
-        var missingCount = 0;
 
         foreach (var kvp in placeholderMapping)
         {
-            var placeholder = kvp.Key;
+            var placeholder = kvp.Key;  // 例: [[IMG_PLACEHOLDER_001]]
             var imageMarkdown = kvp.Value;
-
+            
+            if (string.IsNullOrEmpty(imageMarkdown))
+            {
+                continue;
+            }
+            
+            // プレースホルダー番号を抽出
+            var numMatch = System.Text.RegularExpressions.Regex.Match(placeholder, @"(\d+)");
+            if (!numMatch.Success)
+            {
+                _logger.LogWarning("[ステップ6] プレースホルダー番号が見つかりません: {Placeholder}", placeholder);
+                continue;
+            }
+            var num = numMatch.Value;
+            var numInt = int.Parse(num);
+            
+            // 正規表現で柔軟に検索（シングル/ダブルブラケット、様々な形式に対応）
+            var flexPattern = new System.Text.RegularExpressions.Regex(
+                $@"\[+(?:IMG_PLACEHOLDER|IMAGE:?(?:IMG_PLACEHOLDER)?|PLACEHOLDER)[_:\s]*0*{numInt}\]+",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            
+            var flexMatch = flexPattern.Match(result);
+            if (flexMatch.Success)
+            {
+                result = result.Replace(flexMatch.Value, imageMarkdown);
+                replacedCount++;
+                _logger.LogInformation("[ステップ6] 置換成功: '{Pattern}' -> 画像", flexMatch.Value);
+                continue;
+            }
+            
+            // 見つからない場合は完全一致を試す
             if (result.Contains(placeholder))
             {
                 result = result.Replace(placeholder, imageMarkdown);
                 replacedCount++;
-                _logger.LogInformation("プレースホルダー置換: {Placeholder} -> 画像参照", placeholder);
+                _logger.LogInformation("[ステップ6] 完全一致で置換成功: '{Pattern}' -> 画像", placeholder);
+                continue;
             }
-            else
-            {
-                missingCount++;
-                _logger.LogWarning("プレースホルダーが見つかりません（翻訳時に失われた可能性）: {Placeholder}", placeholder);
-                
-                // 失われたプレースホルダーの画像は末尾に追加
-                result += $"\n\n{imageMarkdown}\n";
-                _logger.LogInformation("失われたプレースホルダーの画像を末尾に追加: {Placeholder}", placeholder);
-            }
+
+            _logger.LogWarning("[ステップ6] プレースホルダーが見つかりません: {Placeholder} (番号: {Num})", placeholder, num);
+            
+            // 見つからない場合は末尾に追加
+            result += $"\n\n{imageMarkdown}\n";
+            _logger.LogInformation("[ステップ6] 画像を末尾に追加");
         }
 
-        _logger.LogInformation("プレースホルダー置換完了: 成功={Replaced}, 失われた={Missing}", replacedCount, missingCount);
+        _logger.LogInformation("[ステップ6] 完了: 置換成功={Replaced}", replacedCount);
         return result;
     }
 
