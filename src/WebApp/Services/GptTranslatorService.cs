@@ -546,6 +546,65 @@ public class GptTranslatorService : IGptTranslatorService
         return Task.FromResult(new Dictionary<string, string>(SupportedLanguages));
     }
 
+    /// <summary>
+    /// Blob Storage から画像を取得します（プロキシエンドポイント用）
+    /// </summary>
+    public async Task<(byte[] Data, string ContentType)> GetImageAsync(
+        string imagePath,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // セキュリティ: images/ フォルダ内のみ許可
+            if (!imagePath.StartsWith("images/", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"無効な画像パスです: {imagePath}");
+            }
+
+            var containerClient = _blobServiceClient.GetBlobContainerClient(_translatedContainerName);
+            var blobClient = containerClient.GetBlobClient(imagePath);
+
+            if (!await blobClient.ExistsAsync(cancellationToken))
+            {
+                throw new FileNotFoundException($"画像が見つかりません: {imagePath}");
+            }
+
+            var downloadResult = await blobClient.DownloadContentAsync(cancellationToken);
+            var imageData = downloadResult.Value.Content.ToArray();
+
+            // Content-Type を決定
+            var contentType = DetermineContentType(imagePath);
+
+            _logger.LogInformation("画像を取得しました: {ImagePath}, Size={Size} bytes, ContentType={ContentType}",
+                imagePath, imageData.Length, contentType);
+
+            return (imageData, contentType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "画像の取得中にエラーが発生しました: {ImagePath}", imagePath);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// ファイル拡張子から Content-Type を取得します
+    /// </summary>
+    private static string DetermineContentType(string filePath)
+    {
+        var extension = Path.GetExtension(filePath).ToLowerInvariant();
+        return extension switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            ".webp" => "image/webp",
+            ".tiff" or ".tif" => "image/tiff",
+            _ => "application/octet-stream"
+        };
+    }
+
     #region Private Methods
 
     /// <summary>
@@ -2223,34 +2282,19 @@ public class GptTranslatorService : IGptTranslatorService
     }
 
     /// <summary>
-    /// 画像の URL を生成します（SAS トークン付き）
+    /// 画像の URL を生成します（プロキシエンドポイント経由）
+    /// Storage Account のネットワーク制限がある場合でもブラウザから画像を表示できます
     /// </summary>
-    private async Task<string> GenerateImageUrlAsync(
+    private Task<string> GenerateImageUrlAsync(
         Azure.Storage.Blobs.BlobContainerClient containerClient,
         string imageName,
         CancellationToken cancellationToken)
     {
-        var blobClient = containerClient.GetBlobClient(imageName);
-
-        // マネージド ID 認証の場合は CanGenerateSasUri が false になる
-        if (blobClient.CanGenerateSasUri)
-        {
-            _logger.LogInformation("アカウントキーで SAS を生成します: {ImageName}", imageName);
-            var sasBuilder = new BlobSasBuilder
-            {
-                BlobContainerName = _translatedContainerName,
-                BlobName = imageName,
-                Resource = "b",
-                ExpiresOn = DateTimeOffset.UtcNow.AddHours(24)
-            };
-            sasBuilder.SetPermissions(BlobSasPermissions.Read);
-            return blobClient.GenerateSasUri(sasBuilder).ToString();
-        }
-        else
-        {
-            _logger.LogInformation("マネージド ID のためユーザー委任 SAS を生成します: {ImageName}", imageName);
-            return await GenerateUserDelegationSasAsync(containerClient, imageName, cancellationToken);
-        }
+        // プロキシエンドポイント経由で画像を配信
+        // URL 形式: /Translator/GPT?handler=Image&path={imageName}
+        var proxyUrl = $"/Translator/GPT?handler=Image&path={Uri.EscapeDataString(imageName)}";
+        _logger.LogInformation("プロキシ URL を生成しました: {ImageName} -> {ProxyUrl}", imageName, proxyUrl);
+        return Task.FromResult(proxyUrl);
     }
 
     /// <summary>

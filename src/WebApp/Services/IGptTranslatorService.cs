@@ -57,4 +57,14 @@ public interface IGptTranslatorService
     /// </summary>
     /// <returns>言語コードと言語名の辞書（例: {"en": "English", "ja": "日本語"}）</returns>
     Task<Dictionary<string, string>> GetSupportedLanguagesAsync();
+
+    /// <summary>
+    /// Blob Storage から画像を取得します（プロキシエンドポイント用）
+    /// </summary>
+    /// <param name="imagePath">images/ フォルダ内の画像パス</param>
+    /// <param name="cancellationToken">キャンセルトークン</param>
+    /// <returns>画像データと Content-Type</returns>
+    Task<(byte[] Data, string ContentType)> GetImageAsync(
+        string imagePath,
+        CancellationToken cancellationToken = default);
 }

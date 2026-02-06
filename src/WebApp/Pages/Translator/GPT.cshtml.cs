@@ -238,4 +238,50 @@ public class GPTModel : PageModel
             return StatusCode(500, new { error = "Markdown ダウンロードに失敗しました" });
         }
     }
+
+    /// <summary>
+    /// 画像プロキシエンドポイント
+    /// Blob Storage の画像を App Service 経由で配信します
+    /// </summary>
+    /// <param name="path">画像パス（例: images/document_20260206/page001_image001.jpg）</param>
+    public async Task<IActionResult> OnGetImageAsync(string path)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return BadRequest(new { error = "画像パスが指定されていません" });
+            }
+
+            // セキュリティ: images/ フォルダ内のみ許可
+            if (!path.StartsWith("images/", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("無効な画像パス: {Path}", path);
+                return BadRequest(new { error = "無効な画像パスです" });
+            }
+
+            // パストラバーサル防止
+            if (path.Contains("..") || path.Contains("//"))
+            {
+                _logger.LogWarning("不正な画像パス: {Path}", path);
+                return BadRequest(new { error = "無効な画像パスです" });
+            }
+
+            _logger.LogInformation("画像プロキシ: {Path}", path);
+
+            var (imageData, contentType) = await _translatorService.GetImageAsync(path);
+
+            return File(imageData, contentType);
+        }
+        catch (FileNotFoundException)
+        {
+            _logger.LogWarning("画像が見つかりません: {Path}", path);
+            return NotFound();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "画像プロキシ中にエラーが発生しました: {Path}", path);
+            return StatusCode(500, new { error = "画像の取得に失敗しました" });
+        }
+    }
 }
