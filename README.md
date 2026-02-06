@@ -1,10 +1,10 @@
 # Read-Text-in-Images-with-Azure-AI
 
-Azure AI サービスを活用した画像からのテキスト抽出アプリケーション
+Azure AI サービスを活用した画像からのテキスト抽出・ドキュメント翻訳アプリケーション
 
 ## 概要
 
-このアプリケーションは、Azure Document Intelligence と Azure OpenAI GPT-4o の2つの異なる AI サービスを使用して、画像からテキストを抽出する Web アプリケーションです。用途に応じて最適な OCR サービスを選択できます。
+このアプリケーションは、Azure Document Intelligence、Azure OpenAI GPT-4o、および Azure Translator の3つの異なる AI サービスを使用して、画像からのテキスト抽出とドキュメント翻訳を行う Web アプリケーションです。用途に応じて最適な AI サービスを選択できます。
 
 ## 主な機能
 
@@ -20,6 +20,23 @@ Azure AI サービスを活用した画像からのテキスト抽出アプリ�
 - 文脈理解と AI による解釈が可能
 - 特定のルールに基づいた抽出に対応
 
+### 3. ドキュメント翻訳 (Azure Translator)
+- Azure Translator Document Translation API を使用
+- 48言語間での翻訳に対応
+- ドキュメントの形式を保持したまま翻訳
+- PDF, DOCX, XLSX, PPTX, HTML, TXT など多様な形式に対応
+- Managed Identity によるセキュアな認証
+
+### 4. AI 翻訳 (GPT-4o)
+- Azure OpenAI GPT-4o を使用した高品質翻訳
+- カスタムプロンプトによる柔軟な翻訳スタイル
+- Document Intelligence でテキスト抽出、PdfPig で画像抽出
+- **複数画像の位置保持**：図の OCR テキストを削除し、正しい位置に画像を挿入
+- **画像プロキシ**：Storage Account のネットワーク制限下でも画像表示可能
+- Markdown 形式で構造を保持
+- PDF 保存はブラウザの印刷機能で対応
+- 専門用語やトーンのカスタマイズが可能
+
 ## 使い分けガイド
 
 ### Document Intelligence を使うべき場合
@@ -34,13 +51,30 @@ Azure AI サービスを活用した画像からのテキスト抽出アプリ�
 - ✅ 特定のフォーマットで出力したい
 - ✅ AI による解釈や要約が必要
 
+### ドキュメント翻訳 (Azure Translator) を使うべき場合
+- ✅ ビジネスドキュメントの多言語化が必要
+- ✅ ドキュメントのレイアウトを完全に保持したい
+- ✅ Excel、PowerPoint などの翻訳
+- ✅ 大量のドキュメントを効率的に処理したい
+
+### AI 翻訳 (GPT-4o) を使うべき場合
+- ✅ コンテキストを理解した高品質な翻訳が必要
+- ✅ 専門用語やトーンをカスタマイズしたい
+- ✅ PDF/Word を Markdown に変換して翻訳したい
+- ✅ 法律、医療、技術文書など専門分野の翻訳
+
 ## 技術スタック
 
 - **フレームワーク**: ASP.NET Core (.NET 10) - Razor Pages
 - **Azure サービス**:
-  - Azure AI Document Intelligence (prebuilt-read モデル)
-  - Azure OpenAI Service (GPT-4o Vision)
-- **認証**: Azure Entra ID (DefaultAzureCredential)
+  - Azure AI Document Intelligence (prebuilt-read / prebuilt-layout モデル)
+  - Azure OpenAI Service (GPT-4o Vision / GPT-4o 翻訳)
+  - Azure Translator (Document Translation API)
+  - Azure Blob Storage (翻訳用一時ストレージ)
+- **PDF 処理**: PdfPig (画像抽出)
+- **Markdown 処理**: Markdig
+- **認証**: Azure Entra ID (DefaultAzureCredential / Managed Identity)
+- **可観測性**: OpenTelemetry + Application Insights
 - **UI**: Bootstrap 5 + カスタム CSS
 
 ## プロジェクト構造
@@ -55,11 +89,15 @@ Read-Text-in-Images-with-Azure-AI/
 │       │   ├── Error.cshtml              # エラーページ
 │       │   ├── Error.cshtml.cs
 │       │   ├── OCR/
-│       │   │   ├── Index.cshtml          # Document Intelligence 画面
-│       │   │   └── Index.cshtml.cs
-│       │   ├── GPT/
-│       │   │   ├── Index.cshtml          # GPT-4o Vision 画面
-│       │   │   └── Index.cshtml.cs
+│       │   │   ├── DocumentIntelligence.cshtml     # Document Intelligence OCR 画面
+│       │   │   ├── DocumentIntelligence.cshtml.cs
+│       │   │   ├── GPT.cshtml                      # GPT-4o Vision OCR 画面
+│       │   │   └── GPT.cshtml.cs
+│       │   ├── Translator/
+│       │   │   ├── AzureTranslator.cshtml          # Azure Translator 翻訳画面
+│       │   │   ├── AzureTranslator.cshtml.cs
+│       │   │   ├── GPT.cshtml                      # GPT-4o AI 翻訳画面
+│       │   │   └── GPT.cshtml.cs
 │       │   ├── Shared/
 │       │   │   ├── _Layout.cshtml        # 共通レイアウト
 │       │   │   ├── _Layout.cshtml.css
@@ -67,24 +105,36 @@ Read-Text-in-Images-with-Azure-AI/
 │       │   ├── _ViewImports.cshtml
 │       │   └── _ViewStart.cshtml
 │       ├── Services/
-│       │   ├── IOcrService.cs
-│       │   ├── DocumentIntelligenceService.cs   # Document Intelligence 実装
-│       │   ├── IGptVisionService.cs
-│       │   ├── OpenAIVisionService.cs           # GPT-4o Vision 実装
+│       │   ├── IOcrService.cs                    # OCR インターフェース
+│       │   ├── DocumentIntelligenceService.cs    # Document Intelligence 実装
+│       │   ├── IGptVisionService.cs              # GPT Vision インターフェース
+│       │   ├── OpenAIVisionService.cs            # GPT-4o Vision 実装
+│       │   ├── ITranslatorService.cs             # Azure Translator インターフェース
+│       │   ├── AzureTranslatorService.cs         # Azure Translator 実装
+│       │   ├── IGptTranslatorService.cs          # GPT 翻訳インターフェース
+│       │   ├── GptTranslatorService.cs           # GPT-4o 翻訳実装
 │       │   └── HealthChecks/
-│       │       ├── DocumentIntelligenceHealthCheck.cs  # ヘルスチェック
-│       │       └── AzureOpenAIHealthCheck.cs           # ヘルスチェック
+│       │       ├── DocumentIntelligenceHealthCheck.cs  # Document Intelligence ヘルスチェック
+│       │       ├── AzureOpenAIHealthCheck.cs           # Azure OpenAI ヘルスチェック
+│       │       ├── AzureTranslatorHealthCheck.cs       # Azure Translator ヘルスチェック
+│       │       └── AzureBlobStorageHealthCheck.cs      # Azure Blob Storage ヘルスチェック
 │       ├── Models/
 │       │   ├── OcrResult.cs              # Document Intelligence 結果
 │       │   ├── VisionOcrResult.cs        # GPT-4o Vision 結果
-│       │   ├── OcrError.cs
-│       │   └── FileUploadOptions.cs
+│       │   ├── TranslationResult.cs      # Azure Translator 翻訳結果
+│       │   ├── GptTranslationResult.cs   # GPT 翻訳結果
+│       │   ├── GptTranslationOptions.cs  # GPT 翻訳オプション
+│       │   ├── ExtractedImage.cs         # 抽出画像情報
+│       │   ├── OcrError.cs               # エラー情報
+│       │   └── FileUploadOptions.cs      # ファイルアップロード設定
 │       ├── wwwroot/
 │       │   ├── css/
 │       │   │   └── site.css              # カスタムスタイル
 │       │   ├── js/
 │       │   │   ├── ocr-app.js            # Document Intelligence UI
 │       │   │   ├── gpt-vision.js         # GPT-4o Vision UI
+│       │   │   ├── translator.js         # Azure Translator UI
+│       │   │   ├── gpt-translator.js     # GPT-4o 翻訳 UI
 │       │   │   └── site.js
 │       │   └── lib/
 │       │       ├── bootstrap/
@@ -98,8 +148,10 @@ Read-Text-in-Images-with-Azure-AI/
 │       └── WebApp.csproj
 ├── references/
 │   ├── plan.md                           # 実装計画 (Phase 1-10)
-│   ├── plan_add-on-1.md                  # 追加機能計画 (GPT-4o)
+│   ├── plan_add-on-1.md                  # 追加機能計画 (GPT-4o Vision)
 │   ├── plan_add-on-2.md                  # 追加機能計画 (OpenTelemetry)
+│   ├── plan_translator.md                # 追加機能計画 (Azure Translator)
+│   ├── plan_translator_gpt.md            # 追加機能計画 (GPT-4o 翻訳)
 │   ├── architecture.md                   # アーキテクチャ設計
 │   ├── features.md                       # 機能一覧
 │   ├── implementation-plan.md            # 実装計画
@@ -132,9 +184,28 @@ AzureOpenAI__Endpoint=https://your-resource.openai.azure.com/
 
 # Azure OpenAI デプロイメント名
 AzureOpenAI__DeploymentName=gpt-4o
+
+# Azure Translator エンドポイント
+AzureTranslator__Endpoint=https://your-translator.cognitiveservices.azure.com/
+
+# Azure Translator リージョン
+AzureTranslator__Region=japaneast
+
+# Azure Storage アカウント名（ドキュメント翻訳用）
+AzureStorage__AccountName=your-storage-account-name
+
+# Azure Storage コンテナ名（Azure Translator 用）
+AzureStorage__SourceContainerName=source
+AzureStorage__TargetContainerName=target
+
+# Azure Storage コンテナ名（GPT-4o 翻訳用）
+AzureStorage__TranslatedContainerName=translated
 ```
 
-> **注意**: Application Insights の接続文字列（`APPLICATIONINSIGHTS_CONNECTION_STRING`）は、App Service で Application Insights を有効にすると自動的に設定されます。手動設定は不要です。
+> **注意**: 
+> - Storage への認証は Entra ID (DefaultAzureCredential / Managed Identity) を使用します。接続文字列は不要です。
+> - App Service のマネージド ID に「Storage Blob Data Contributor」ロールを割り当ててください。
+> - Application Insights の接続文字列（`APPLICATIONINSIGHTS_CONNECTION_STRING`）は、App Service で Application Insights を有効にすると自動的に設定されます。
 
 #### オプション環境変数
 
@@ -184,10 +255,22 @@ curl http://localhost:5269/warmup
 }
 ```
 
+**確認対象サービス:**
+| サービス | 確認内容 |
+|----------|----------|
+| Document Intelligence | エンドポイント接続 |
+| OCR サービス | DI 初期化 |
+| Azure OpenAI | エンドポイント接続 |
+| GPT Vision サービス | DI 初期化 |
+| Azure Translator | 言語一覧 API 接続 |
+| Azure Blob Storage | アカウント接続 |
+| GPT 翻訳サービス | DI 初期化 |
+| PDF 変換サービス | DI 初期化 |
+
 **特徴:**
 - HTTP アクセス可能（HTTPSリダイレクトなし）
 - すべてのサービスの初期化を確認
-- Azure サービスへの実際の接続確認（HTTP HEAD リクエスト）
+- Azure サービスへの実際の接続確認（HTTP HEAD/GET リクエスト）
 - エラー時は HTTP 503 (Service Unavailable) を返却
 
 #### `/health`
@@ -212,9 +295,21 @@ curl http://localhost:5269/health
       "status": "Healthy",
       "description": "Azure OpenAI endpoint is reachable",
       "duration": "00:00:00.189"
+    },
+    {
+      "name": "azure_translator",
+      "status": "Healthy",
+      "description": "Azure Translator サービスは正常です（リージョン: japaneast）",
+      "duration": "00:00:00.156"
+    },
+    {
+      "name": "azure_blob_storage",
+      "status": "Healthy",
+      "description": "Azure Blob Storage は正常です - コンテナ: source(source): OK, target(target): OK, translated(translated): OK",
+      "duration": "00:00:00.312"
     }
   ],
-  "totalDuration": "00:00:00.423"
+  "totalDuration": "00:00:00.891"
 }
 ```
 
@@ -254,11 +349,23 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 - ✅ Azure API エラーハンドリング (429, 401/403 対応)
 - ✅ レスポンシブデザイン
 
+### 翻訳機能
+- ✅ Azure Translator によるドキュメント翻訳（48言語対応）
+- ✅ GPT-4o による高品質 AI 翻訳（カスタムプロンプト対応）
+- ✅ Document Intelligence 連携（テキスト＋画像抽出）
+- ✅ Markdown 形式での構造保持
+- ✅ PDF 保存はブラウザ印刷機能で対応
+
 ### 可観測性とヘルスチェック
 - ✅ OpenTelemetry による分散トレーシングとメトリクス
 - ✅ Application Insights 統合
 - ✅ ヘルスチェックエンドポイント (`/health`, `/health/ready`, `/health/live`)
+  - Document Intelligence ヘルスチェック
+  - Azure OpenAI ヘルスチェック
+  - Azure Translator ヘルスチェック
+  - Azure Blob Storage ヘルスチェック（コンテナ存在確認）
 - ✅ Warmup エンドポイント (`/warmup`) - App Service の起動時初期化
+  - 8つのサービスの初期化と接続確認
 - ✅ カスタムメトリクスによるヘルスチェック状態の記録
 - ✅ Azure Container Apps/AKS の Readiness/Liveness プローブ対応
 

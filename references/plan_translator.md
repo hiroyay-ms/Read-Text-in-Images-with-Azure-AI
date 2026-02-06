@@ -206,13 +206,14 @@ dotnet build
 
 実装のポイント:
 1. **認証**: DefaultAzureCredential を使用（Entra ID 認証） ✅
-2. **Blob へのアップロード**: ソースコンテナに一時的にドキュメントをアップロード（一意のファイル名を生成）
-3. **翻訳ジョブの開始**: Document Translation API を呼び出し
-4. **同期的な待機**: `WaitForCompletionAsync()` を使用して翻訳完了まで待機（タイムアウト設定あり）
-5. **結果の取得**: ターゲットコンテナから翻訳済みドキュメントをダウンロード
-6. **クリーンアップ**: 処理完了後、ソースとターゲットの一時ファイルを削除
-7. **エラーハンドリング**: HTTP ステータスコードに応じた詳細なエラーメッセージ
-8. **ロギング**: 各ステップでの詳細なログ出力
+2. **コンテナの初期化（クリーンアップ）**: 翻訳開始前に source/target コンテナ内の全 Blob を削除し、残留ファイルを防止 ✅
+3. **Blob へのアップロード**: ソースコンテナに一時的にドキュメントをアップロード（一意のファイル名を生成）
+4. **翻訳ジョブの開始**: Document Translation API を呼び出し
+5. **同期的な待機**: `WaitForCompletionAsync()` を使用して翻訳完了まで待機（タイムアウト設定あり）
+6. **結果の取得**: ターゲットコンテナから翻訳済みドキュメントをダウンロード
+7. **後処理クリーンアップ**: 処理完了後、ソースとターゲットの一時ファイルを削除
+8. **エラーハンドリング**: HTTP ステータスコードに応じた詳細なエラーメッセージ
+9. **ロギング**: 各ステップでの詳細なログ出力
 
 #### 検証
 - [x] ファイルが作成されている ✅
@@ -224,6 +225,10 @@ dotnet build
 **実装内容**:
 - DocumentTranslationClient と BlobServiceClient の初期化（DefaultAzureCredential）
 - ドキュメント検証（40MB 制限、対応形式チェック）
+- **翻訳前コンテナクリーンアップ**（CleanupContainerAsync メソッド）
+  - source/target コンテナ内の全 Blob を削除
+  - 前回の翻訳で残留したファイルを防止
+  - クリーンアップ失敗時は警告ログを出力し、翻訳処理は継続
 - Blob へのアップロード（一意のファイル名生成）
 - **ユーザー委任 SAS トークンの生成**（Entra ID 認証対応）
   - ソースコンテナ: Read + List 権限
@@ -231,13 +236,14 @@ dotnet build
 - **コンテナベースの URI 使用**（Document Translation API の要件）
 - 翻訳ジョブの開始と同期的な待機（WaitForCompletionAsync）
 - 翻訳済みドキュメントのダウンロード（ソースと同じファイル名）
-- 一時ファイルのクリーンアップ
+- 後処理クリーンアップ（翻訳完了後の一時ファイル削除）
 - 詳細なエラーハンドリングとロギング
 
 **重要な実装ポイント**:
 - Document Translation API はアカウントキーではなく、ユーザー委任 SAS を使用
 - ソースとターゲットの両方でコンテナ URI が必要
 - 翻訳後のファイル名はソースファイル名と同じ
+- **コンテナクリーンアップ**: 翻訳開始前に両コンテナを初期化することで、エラーやタイムアウト時の残留ファイルを防止
 
 ---
 
@@ -755,6 +761,133 @@ UI コンポーネント:
 
 ---
 
+## Phase 19.5: ヘルスチェックと Warmup の実装 (推定: 1時間) ✅ 完了
+
+### ゴール
+Azure Translator と Azure Blob Storage のヘルスチェック、および Warmup エンドポイントに翻訳サービスの初期化確認を追加
+
+---
+
+### Step 19.5.1: Azure Translator ヘルスチェックの実装 ✅ 完了
+
+#### タスク
+- [x] `Services/HealthChecks/AzureTranslatorHealthCheck.cs` の作成
+- [x] Translator API の言語一覧エンドポイントで接続確認
+
+#### ファイル: `Services/HealthChecks/AzureTranslatorHealthCheck.cs`
+
+実装のポイント:
+- `IHealthCheck` インターフェースを実装
+- `AzureTranslator:Endpoint` と `AzureTranslator:Region` の設定確認
+- `/languages?api-version=3.0` エンドポイントで接続確認
+- タイムアウト: 5秒
+
+#### 検証
+- [x] ファイルが作成されている ✅
+- [x] ヘルスチェックが動作する ✅
+
+**実装完了日**: 2026年2月5日
+
+---
+
+### Step 19.5.2: Azure Blob Storage ヘルスチェックの実装 ✅ 完了
+
+#### タスク
+- [x] `Services/HealthChecks/AzureBlobStorageHealthCheck.cs` の作成
+- [x] ストレージアカウントへの接続確認
+- [x] 翻訳用コンテナ（source, target, translated）の存在確認
+
+#### ファイル: `Services/HealthChecks/AzureBlobStorageHealthCheck.cs`
+
+実装のポイント:
+- `IHealthCheck` インターフェースを実装
+- `DefaultAzureCredential` で認証（Entra ID）
+- `BlobServiceClient.GetPropertiesAsync()` で接続確認
+- 各コンテナの存在確認（source, target, translated）
+- RBAC 権限エラーの詳細なエラーメッセージ
+
+#### 検証
+- [x] ファイルが作成されている ✅
+- [x] ヘルスチェックが動作する ✅
+
+**実装完了日**: 2026年2月5日
+
+---
+
+### Step 19.5.3: Program.cs へのヘルスチェック登録 ✅ 完了
+
+#### タスク
+- [x] `AzureTranslatorHealthCheck` の登録
+- [x] `AzureBlobStorageHealthCheck` の登録
+
+#### コード変更
+
+```csharp
+// ヘルスチェックの登録
+builder.Services.AddHealthChecks()
+    .AddCheck<DocumentIntelligenceHealthCheck>(
+        "document_intelligence",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" })
+    .AddCheck<AzureOpenAIHealthCheck>(
+        "azure_openai",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" })
+    .AddCheck<AzureTranslatorHealthCheck>(          // 新規追加
+        "azure_translator",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" })
+    .AddCheck<AzureBlobStorageHealthCheck>(         // 新規追加
+        "azure_blob_storage",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: new[] { "ready", "external" });
+```
+
+#### 検証
+- [x] Program.cs が更新されている ✅
+- [x] ビルドが成功する ✅
+
+**実装完了日**: 2026年2月5日
+
+---
+
+### Step 19.5.4: Warmup エンドポイントの拡張 ✅ 完了
+
+#### タスク
+- [x] Azure Translator の接続確認を追加
+- [x] Azure Blob Storage の接続確認を追加
+
+#### Warmup で確認するサービス
+
+| サービス | 確認内容 | 状態 |
+|----------|----------|------|
+| Document Intelligence | エンドポイント接続 | 既存 |
+| OCR サービス | DI 初期化 | 既存 |
+| Azure OpenAI | エンドポイント接続 | 既存 |
+| GPT Vision サービス | DI 初期化 | 既存 |
+| **Azure Translator** | 言語一覧 API 接続 | ✅ 新規追加 |
+| **Azure Blob Storage** | アカウント接続 | ✅ 新規追加 |
+
+#### 検証
+- [x] Warmup エンドポイントが更新されている ✅
+- [x] 翻訳サービスの初期化が確認される ✅
+
+**実装完了日**: 2026年2月5日
+
+---
+
+### Phase 19.5 完了チェックリスト
+
+- [x] AzureTranslatorHealthCheck が実装されている ✅
+- [x] AzureBlobStorageHealthCheck が実装されている ✅
+- [x] Program.cs にヘルスチェックが登録されている ✅
+- [x] Warmup エンドポイントが拡張されている ✅
+- [x] ビルドが成功する ✅
+
+**実装完了日**: 2026年2月5日
+
+---
+
 ## 📊 実装完了後の全体構成
 
 ```
@@ -765,7 +898,12 @@ src/WebApp/
 │   ├── IGptVisionService.cs              # GPT-4o インターフェース
 │   ├── OpenAIVisionService.cs            # GPT-4o 実装
 │   ├── ITranslatorService.cs             # Translator インターフェース（新規）
-│   └── AzureTranslatorService.cs         # Translator 実装（新規）
+│   ├── AzureTranslatorService.cs         # Translator 実装（新規）
+│   └── HealthChecks/
+│       ├── DocumentIntelligenceHealthCheck.cs
+│       ├── AzureOpenAIHealthCheck.cs
+│       ├── AzureTranslatorHealthCheck.cs     # 新規追加
+│       └── AzureBlobStorageHealthCheck.cs    # 新規追加
 ├── Models/
 │   ├── OcrResult.cs                      # Document Intelligence 結果
 │   ├── VisionOcrResult.cs                # GPT-4o 結果

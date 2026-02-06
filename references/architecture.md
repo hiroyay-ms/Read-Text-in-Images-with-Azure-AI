@@ -2,13 +2,18 @@
 
 ## プロジェクト概要
 
-アップロードされた画像から印刷または手書きのテキストを抽出するWebアプリケーション
+アップロードされた画像から印刷または手書きのテキストを抽出し、ドキュメント翻訳を行うWebアプリケーション
 
 ### 技術スタック
 - **フロントエンド**: ASP.NET Core Web App (Razor Pages) + JavaScript
 - **バックエンド**: .NET 10 (C#)
-- **OCRサービス**: Azure Document Intelligence
-- **デプロイ**: Docker コンテナ
+- **OCRサービス**: Azure Document Intelligence, Azure OpenAI GPT-4o Vision
+- **翻訳サービス**: Azure Translator (Document Translation API), Azure OpenAI GPT-4o
+- **Markdown 処理**: Markdig
+- **ストレージ**: Azure Blob Storage (翻訳用一時ストレージ)
+- **認証**: Azure Entra ID (DefaultAzureCredential / Managed Identity)
+- **可観測性**: OpenTelemetry + Application Insights
+- **デプロイ**: Docker コンテナ, Azure App Service
 
 ---
 
@@ -23,12 +28,16 @@ Read-Text-in-Images-with-Azure-AI/
 │       │   ├── Index.cshtml.cs
 │       │   ├── Error.cshtml       # エラーページ
 │       │   ├── Error.cshtml.cs
-│       │   ├── OCR/               # Document Intelligence 画面
-│       │   │   ├── Index.cshtml
-│       │   │   └── Index.cshtml.cs
-│       │   ├── GPT/               # GPT-4o Vision 画面
-│       │   │   ├── Index.cshtml
-│       │   │   └── Index.cshtml.cs
+│       │   ├── OCR/               # OCR 機能
+│       │   │   ├── DocumentIntelligence.cshtml     # Document Intelligence OCR 画面
+│       │   │   ├── DocumentIntelligence.cshtml.cs
+│       │   │   ├── GPT.cshtml                      # GPT-4o Vision OCR 画面
+│       │   │   └── GPT.cshtml.cs
+│       │   ├── Translator/        # 翻訳機能
+│       │   │   ├── AzureTranslator.cshtml          # Azure Translator 翻訳画面
+│       │   │   ├── AzureTranslator.cshtml.cs
+│       │   │   ├── GPT.cshtml                      # GPT-4o AI 翻訳画面
+│       │   │   └── GPT.cshtml.cs
 │       │   ├── Shared/            # 共有レイアウト
 │       │   │   ├── _Layout.cshtml
 │       │   │   ├── _Layout.cshtml.css
@@ -36,22 +45,37 @@ Read-Text-in-Images-with-Azure-AI/
 │       │   ├── _ViewImports.cshtml
 │       │   └── _ViewStart.cshtml
 │       ├── Services/              # ビジネスロジック層
-│       │   ├── IOcrService.cs
-│       │   ├── DocumentIntelligenceService.cs
-│       │   ├── IGptVisionService.cs
-│       │   ├── OpenAIVisionService.cs
+│       │   ├── IOcrService.cs                    # OCR インターフェース
+│       │   ├── DocumentIntelligenceService.cs    # Document Intelligence 実装
+│       │   ├── IGptVisionService.cs              # GPT Vision インターフェース
+│       │   ├── OpenAIVisionService.cs            # GPT-4o Vision 実装
+│       │   ├── ITranslatorService.cs             # Azure Translator インターフェース
+│       │   ├── AzureTranslatorService.cs         # Azure Translator 実装
+│       │   ├── IGptTranslatorService.cs          # GPT 翻訳インターフェース
+│       │   ├── GptTranslatorService.cs           # GPT-4o 翻訳実装
+│       │   ├── IPdfConverterService.cs           # PDF 変換インターフェース
+│       │   ├── PdfConverterService.cs            # PDF 変換実装（多言語フォント対応）
 │       │   └── HealthChecks/      # ヘルスチェック実装
-│       │       ├── DocumentIntelligenceHealthCheck.cs
-│       │       └── AzureOpenAIHealthCheck.cs
+│       │       ├── DocumentIntelligenceHealthCheck.cs  # Document Intelligence ヘルスチェック
+│       │       ├── AzureOpenAIHealthCheck.cs           # Azure OpenAI ヘルスチェック
+│       │       ├── AzureTranslatorHealthCheck.cs       # Azure Translator ヘルスチェック
+│       │       └── AzureBlobStorageHealthCheck.cs      # Azure Blob Storage ヘルスチェック
 │       ├── Models/                # データモデル、DTOs
-│       │   ├── OcrResult.cs       # Document Intelligence 結果
-│       │   ├── VisionOcrResult.cs # GPT-4o Vision 結果
-│       │   ├── OcrError.cs
-│       │   └── FileUploadOptions.cs
+│       │   ├── OcrResult.cs              # Document Intelligence 結果
+│       │   ├── VisionOcrResult.cs        # GPT-4o Vision 結果
+│       │   ├── TranslationResult.cs      # Azure Translator 翻訳結果
+│       │   ├── GptTranslationResult.cs   # GPT 翻訳結果
+│       │   ├── GptTranslationOptions.cs  # GPT 翻訳オプション
+│       │   ├── ExtractedImage.cs         # 抽出画像情報
+│       │   ├── PdfOptions.cs             # PDF 変換オプション
+│       │   ├── OcrError.cs               # エラー情報
+│       │   └── FileUploadOptions.cs      # ファイルアップロード設定
 │       ├── wwwroot/               # 静的ファイル
 │       │   ├── js/
-│       │   │   ├── ocr-app.js     # Document Intelligence UI
-│       │   │   ├── gpt-vision.js  # GPT-4o Vision UI
+│       │   │   ├── ocr-app.js            # Document Intelligence UI
+│       │   │   ├── gpt-vision.js         # GPT-4o Vision UI
+│       │   │   ├── translator.js         # Azure Translator UI
+│       │   │   ├── gpt-translator.js     # GPT-4o 翻訳 UI
 │       │   │   └── site.js
 │       │   ├── css/
 │       │   │   └── site.css
@@ -72,8 +96,10 @@ Read-Text-in-Images-with-Azure-AI/
     ├── features.md                # 機能一覧
     ├── implementation-plan.md     # 実装計画
     ├── plan.md                    # 段階的実装計画
-    ├── plan_add-on-1.md           # 追加機能1 (GPT-4o)
+    ├── plan_add-on-1.md           # 追加機能1 (GPT-4o Vision)
     ├── plan_add-on-2.md           # 追加機能2 (OpenTelemetry)
+    ├── plan_translator.md         # 追加機能 (Azure Translator)
+    ├── plan_translator_gpt.md     # 追加機能 (GPT-4o 翻訳)
     ├── image1.png                 # UIモック (アップロード前)
     └── image2.png                 # UIモック (アップロード後)
 ```
@@ -209,6 +235,123 @@ public class OcrError
     public string Details { get; set; }
 }
 ```
+
+#### TranslationResult.cs
+```csharp
+public class TranslationResult
+{
+    public byte[] TranslatedContent { get; set; }
+    public string TranslatedFileName { get; set; }
+    public string ContentType { get; set; }
+    public string SourceLanguage { get; set; }
+    public string TargetLanguage { get; set; }
+    public long CharactersTranslated { get; set; }
+    public TimeSpan Duration { get; set; }
+}
+```
+
+---
+
+### 4. 翻訳サービス層
+
+#### ITranslatorService インターフェース
+```csharp
+public interface ITranslatorService
+{
+    Task<TranslationResult> TranslateDocumentAsync(
+        IFormFile document, 
+        string targetLanguage, 
+        string? sourceLanguage = null);
+    Task<bool> ValidateDocumentAsync(IFormFile document);
+    Task<Dictionary<string, string>> GetSupportedLanguagesAsync();
+}
+```
+
+#### AzureTranslatorService 実装
+```csharp
+public class AzureTranslatorService : ITranslatorService
+{
+    private readonly BlobServiceClient _blobServiceClient;
+    private readonly SingleDocumentTranslationClient _translationClient;
+    private readonly ILogger<AzureTranslatorService> _logger;
+    
+    public async Task<TranslationResult> TranslateDocumentAsync(
+        IFormFile document, 
+        string targetLanguage, 
+        string? sourceLanguage = null)
+    {
+        // 1. ドキュメント検証
+        // 2. Blob Storage にアップロード
+        // 3. 既存のターゲットファイルがあれば削除（再翻訳対応）
+        // 4. Azure Translator Document Translation API 呼び出し
+        // 5. 翻訳完了まで待機
+        // 6. 翻訳済みファイルをダウンロード
+        // 7. Blob Storage のファイルをクリーンアップ
+        // 8. 結果を返却
+    }
+}
+```
+
+**認証方式**:
+- Managed Identity を使用（DefaultAzureCredential）
+- SAS トークンは使用せず、コンテナ URI で直接指定
+- ネットワーク制限環境（プライベートエンドポイント）対応
+
+---
+
+### 5. GPT 翻訳サービス層
+
+#### IGptTranslatorService インターフェース
+```csharp
+public interface IGptTranslatorService
+{
+    Task<bool> ValidateDocumentAsync(IFormFile document);
+    Task<GptTranslationResult> TranslateTextAsync(
+        string text, 
+        string targetLanguage, 
+        GptTranslationOptions? options = null);
+    Task<GptTranslationResult> TranslateDocumentAsync(
+        IFormFile document, 
+        string targetLanguage, 
+        GptTranslationOptions? options = null);
+    Task<string> GetTranslationResultAsync(string blobName);
+    Task<Dictionary<string, string>> GetSupportedLanguagesAsync();
+}
+```
+
+#### GptTranslatorService 実装
+```csharp
+public class GptTranslatorService : IGptTranslatorService
+{
+    private readonly ChatClient _chatClient;
+    private readonly DocumentAnalysisClient _documentClient;
+    private readonly BlobServiceClient _blobServiceClient;
+    private readonly ILogger<GptTranslatorService> _logger;
+    
+    public async Task<GptTranslationResult> TranslateDocumentAsync(
+        IFormFile document, 
+        string targetLanguage, 
+        GptTranslationOptions? options = null)
+    {
+        // 1. ファイル形式検証（PDF/Word のみ）
+        // 2. Document Intelligence でテキスト＋画像抽出
+        // 3. 画像を Blob Storage に保存
+        // 4. GPT-4o で翻訳（Markdown 形式）
+        // 5. 翻訳結果を Blob Storage に保存
+        // 6. 結果を返却
+    }
+}
+```
+
+**対応ファイル形式**:
+- PDF (.pdf)
+- Word (.docx)
+- その他の形式はエラーを返す
+
+**翻訳結果の保存先**:
+- コンテナ名: `translated`
+- Markdown ファイル: `{元ファイル名}_{言語コード}_{タイムスタンプ}.md`
+- 画像ファイル: `images/{元ファイル名}_{タイムスタンプ}/image_xxx.png`
 
 ---
 
@@ -370,6 +513,53 @@ app.Run();
    └── コピーボタンの有効化
 ```
 
+### ドキュメント翻訳の処理フロー
+
+```
+1. ユーザーアクション
+   ├── ドキュメントをドラッグ&ドロップ
+   ├── ファイル選択ダイアログから選択
+   ├── 翻訳元言語を選択（オプション、自動検出可能）
+   └── 翻訳先言語を選択（必須）
+   
+2. クライアントサイド処理 (JavaScript)
+   ├── ドキュメント情報の表示（ファイル名、サイズ、形式）
+   ├── ファイル形式検証
+   └── FormData オブジェクト作成（document, targetLanguage, sourceLanguage）
+   
+3. サーバーへ送信
+   └── POST /Translator/AzureTranslator?handler=Translate
+   
+4. サーバーサイド処理 (PageModel)
+   ├── リクエスト検証
+   ├── ファイルサイズチェック（最大 40MB）
+   └── ITranslatorService.TranslateDocumentAsync() 呼び出し
+   
+5. 翻訳サービス処理 (AzureTranslatorService)
+   ├── ドキュメントを Blob Storage にアップロード
+   ├── 既存のターゲットファイルがあれば削除
+   ├── Azure Translator Document Translation API 呼び出し
+   │   ├── Managed Identity 認証
+   │   ├── ソースコンテナ URI を指定
+   │   └── ターゲットコンテナ URI を指定
+   ├── 翻訳完了まで待機（ポーリング）
+   ├── 翻訳済みファイルをダウンロード
+   └── Blob Storage のファイルをクリーンアップ
+   
+6. レスポンス返却
+   ├── 翻訳済みファイルをバイナリで返却
+   └── カスタムヘッダーで翻訳情報を返却
+       ├── X-Translation-Characters: 翻訳文字数
+       ├── X-Translation-Duration: 処理時間
+       ├── X-Translation-Source-Language: 翻訳元言語
+       └── X-Translation-Target-Language: 翻訳先言語
+   
+7. クライアントサイド処理
+   ├── ファイルダウンロードの開始
+   ├── 翻訳情報の表示
+   └── 成功メッセージの表示
+```
+
 ---
 
 ## Azure Document Intelligence 連携
@@ -423,6 +613,72 @@ public async Task<OcrResult> ExtractTextAsync(IFormFile imageFile)
 - PDF
 - TIFF/TIF
 - BMP
+
+---
+
+## Azure Translator 連携
+
+### 使用する API
+- **Document Translation API**: ドキュメント形式を保持した翻訳
+
+### 対応フォーマット
+- PDF (.pdf)
+- Word (.docx)
+- Excel (.xlsx)
+- PowerPoint (.pptx)
+- HTML (.html, .htm)
+- テキスト (.txt, .csv, .tsv)
+
+### 認証方式
+- **Managed Identity**: DefaultAzureCredential による認証
+- **ネットワーク制限対応**: プライベートエンドポイント環境での動作
+
+### API 呼び出し例
+```csharp
+public async Task<TranslationResult> TranslateDocumentAsync(
+    IFormFile document, 
+    string targetLanguage, 
+    string? sourceLanguage = null)
+{
+    var stopwatch = Stopwatch.StartNew();
+    
+    // 1. Blob Storage にアップロード
+    var sourceUri = await UploadToBlobAsync(document);
+    
+    // 2. 既存のターゲットファイルがあれば削除
+    await DeleteTargetIfExistsAsync(document.FileName);
+    
+    // 3. 翻訳リクエストを構築
+    var source = new TranslationSource(new Uri(_sourceContainerUri));
+    var target = new TranslationTarget(new Uri(_targetContainerUri), targetLanguage);
+    
+    var content = new DocumentTranslateContent(source, [target]);
+    
+    // 4. 翻訳実行
+    var response = await _translationClient.TranslateAsync(content);
+    
+    // 5. 結果を取得してダウンロード
+    var translatedContent = await DownloadTranslatedFileAsync(document.FileName);
+    
+    stopwatch.Stop();
+    
+    return new TranslationResult
+    {
+        TranslatedContent = translatedContent,
+        TranslatedFileName = $"{Path.GetFileNameWithoutExtension(document.FileName)}_{targetLanguage}{Path.GetExtension(document.FileName)}",
+        ContentType = GetContentType(document.FileName),
+        SourceLanguage = sourceLanguage,
+        TargetLanguage = targetLanguage,
+        CharactersTranslated = translatedContent.Length,
+        Duration = stopwatch.Elapsed
+    };
+}
+```
+
+### 注意事項
+- **AI Foundry リソースの制限**: マルチサービス AI Foundry リソースでは Managed Identity 認証がサポートされない場合があります
+- **推奨構成**: 単一サービスの Azure Translator リソースを使用
+- **ネットワーク設定**: Storage Account と Translator の両方で適切なネットワーク設定が必要
 
 ---
 
@@ -673,8 +929,14 @@ public class IndexModelTests
 ```xml
 <!-- Azure AI サービス -->
 <PackageReference Include="Azure.AI.FormRecognizer" Version="4.1.0" />
+<PackageReference Include="Azure.AI.DocumentIntelligence" Version="1.0.0" />
 <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
+<PackageReference Include="Azure.AI.Translation.Document" Version="2.0.0" />
 <PackageReference Include="Azure.Identity" Version="1.13.1" />
+<PackageReference Include="Azure.Storage.Blobs" Version="12.27.0" />
+
+<!-- PDF 処理 -->
+<PackageReference Include="PdfPig" Version="0.1.9" />
 
 <!-- OpenTelemetry -->
 <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.9.0" />
@@ -684,6 +946,9 @@ public class IndexModelTests
 
 <!-- ヘルスチェック -->
 <PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="8.0.1" />
+
+<!-- Markdown -->
+<PackageReference Include="Markdig" Version="0.44.0" />
 ```
 
 ### クライアントサイドライブラリ
@@ -768,6 +1033,16 @@ if (!string.IsNullOrEmpty(connectionString))
 - **`/health/ready`**: Readiness プローブ (Kubernetes/Container Apps)
 - **`/health/live`**: Liveness プローブ (外部依存関係なし)
 - **`/warmup`**: Warmup エンドポイント (アプリケーション起動時のサービス初期化確認)
+
+#### 登録済みヘルスチェック
+
+| チェック名 | 対象 | 確認内容 |
+|---------|------|----------|
+| `document_intelligence` | Document Intelligence | エンドポイント接続 (HTTP HEAD) |
+| `azure_openai` | Azure OpenAI | エンドポイント接続 (HTTP HEAD) |
+| `azure_translator` | Azure Translator | 言語一覧 API 接続 (GET /languages) |
+| `azure_blob_storage` | Azure Blob Storage | アカウント接続 + コンテナ存在確認 |
+
 #### ヘルスチェック実装
 
 ##### DocumentIntelligenceHealthCheck
@@ -842,6 +1117,19 @@ public class AzureOpenAIHealthCheck : IHealthCheck
 
 #### `/warmup` エンドポイント
 アプリケーション起動時にすべての依存サービスの初期化と接続確認を行います。
+
+#### 確認対象サービス（8サービス）
+
+| サービス | 確認内容 |
+|----------|----------|
+| Document Intelligence | エンドポイント接続 (HTTP HEAD) |
+| OCR サービス | DI 初期化確認 |
+| Azure OpenAI | エンドポイント接続 (HTTP HEAD) |
+| GPT Vision サービス | DI 初期化確認 |
+| Azure Translator | 言語一覧 API 接続 (GET /languages) |
+| Azure Blob Storage | アカウント接続 (GetPropertiesAsync) |
+| GPT 翻訳サービス | DI 初期化確認 |
+| PDF 変換サービス | DI 初期化確認 |
 
 ```csharp
 app.MapGet("/warmup", async (IServiceProvider sp, IConfiguration config) =>
@@ -953,6 +1241,9 @@ app.UseWhen(context => !context.Request.Path.StartsWithSegments("/warmup"),
 ✅ **セキュリティ**: ベストプラクティスに基づいた実装  
 ✅ **パフォーマンス**: 非同期処理とリソース管理の最適化  
 ✅ **コンテナ対応**: Docker によるポータブルなデプロイ  
-✅ **保守性**: 明確な責務分離と構造化されたコード
+✅ **保守性**: 明確な責務分離と構造化されたコード  
+✅ **可観測性**: OpenTelemetry + Application Insights による統合モニタリング  
+✅ **ヘルスチェック**: 4つの Azure サービスの状態監視  
+✅ **多言語対応**: PDF 変換で CJK を含む多言語フォントサポート
 
-このアーキテクチャに基づいて開発を進めることで、堅牢で保守性の高いOCRアプリケーションを構築できます。
+このアーキテクチャに基づいて開発を進めることで、堅牢で保守性の高い OCR/翻訳アプリケーションを構築できます。
